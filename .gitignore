@@ -1,0 +1,4 @@
+*.exe
+*.md
+!README.md
+*.pdf
