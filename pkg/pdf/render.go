@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"os"
 	"strings"
 )
 
@@ -638,4 +639,242 @@ func escapeXML(s string) string {
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	s = strings.ReplaceAll(s, "\"", "&quot;")
 	return s
+}
+
+// Renderer provides simple page rendering
+type Renderer struct {
+	doc  *Document
+	dpiX float64
+	dpiY float64
+}
+
+// RenderedImage represents a rendered page image
+type RenderedImage struct {
+	Width  int
+	Height int
+	Data   []byte // RGB data
+}
+
+// ImageSaveOptions contains options for saving images
+type ImageSaveOptions struct {
+	Format  string
+	Quality int
+}
+
+// NewRenderer creates a new renderer
+func NewRenderer(doc *Document) *Renderer {
+	return &Renderer{
+		doc:  doc,
+		dpiX: 150,
+		dpiY: 150,
+	}
+}
+
+// SetResolution sets the rendering resolution
+func (r *Renderer) SetResolution(dpiX, dpiY float64) {
+	r.dpiX = dpiX
+	r.dpiY = dpiY
+}
+
+// RenderPage renders a page to an image
+func (r *Renderer) RenderPage(pageNum int) (*RenderedImage, error) {
+	if pageNum < 1 || pageNum > r.doc.NumPages() {
+		return nil, fmt.Errorf("invalid page number: %d", pageNum)
+	}
+
+	page, err := r.doc.GetPage(pageNum)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate dimensions
+	scaleX := r.dpiX / 72.0
+	scaleY := r.dpiY / 72.0
+	width := int(math.Ceil(page.Width() * scaleX))
+	height := int(math.Ceil(page.Height() * scaleY))
+
+	if width < 1 {
+		width = 1
+	}
+	if height < 1 {
+		height = 1
+	}
+
+	// Create RGB data (white background)
+	data := make([]byte, width*height*3)
+	for i := 0; i < len(data); i++ {
+		data[i] = 255 // White
+	}
+
+	// Render page content
+	r.renderPageContentToRGB(page, data, width, height)
+
+	return &RenderedImage{
+		Width:  width,
+		Height: height,
+		Data:   data,
+	}, nil
+}
+
+// renderPageContentToRGB renders page content to RGB buffer
+func (r *Renderer) renderPageContentToRGB(page *Page, data []byte, width, height int) {
+	if page.Resources == nil {
+		return
+	}
+
+	xobjects := page.Resources.Get("XObject")
+	if xobjects == nil {
+		return
+	}
+
+	xobjDict, ok := xobjects.(Dictionary)
+	if !ok {
+		return
+	}
+
+	pageWidth := page.Width()
+	scale := float64(width) / pageWidth
+
+	for name := range xobjDict {
+		obj := xobjDict.Get(string(name))
+		if obj == nil {
+			continue
+		}
+
+		streamObj, err := page.doc.ResolveObject(obj)
+		if err != nil {
+			continue
+		}
+
+		stream, ok := streamObj.(Stream)
+		if !ok {
+			continue
+		}
+
+		subtype, _ := stream.Dictionary.GetName("Subtype")
+		if subtype != "Image" {
+			continue
+		}
+
+		imgWidth, _ := stream.Dictionary.GetInt("Width")
+		imgHeight, _ := stream.Dictionary.GetInt("Height")
+		if imgWidth == 0 || imgHeight == 0 {
+			continue
+		}
+
+		imgData, err := r.decodeImageStreamData(stream)
+		if err != nil {
+			continue
+		}
+
+		scaledWidth := int(float64(imgWidth) * scale)
+		scaledHeight := int(float64(imgHeight) * scale)
+
+		r.drawImageToRGB(data, width, height, imgData, int(imgWidth), int(imgHeight), 0, 0, scaledWidth, scaledHeight)
+	}
+}
+
+// decodeImageStreamData decodes image data from PDF stream
+func (r *Renderer) decodeImageStreamData(stream Stream) ([]byte, error) {
+	filter, _ := stream.Dictionary.GetName("Filter")
+
+	data := stream.Data
+	var err error
+
+	switch filter {
+	case "FlateDecode":
+		reader, err := zlib.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		data, err = io.ReadAll(reader)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return data, err
+}
+
+// drawImageToRGB draws image data to RGB buffer
+func (r *Renderer) drawImageToRGB(target []byte, targetW, targetH int, src []byte, srcW, srcH, dstX, dstY, dstW, dstH int) {
+	for y := 0; y < dstH && dstY+y < targetH; y++ {
+		srcY := y * srcH / dstH
+		for x := 0; x < dstW && dstX+x < targetW; x++ {
+			srcX := x * srcW / dstW
+			srcIdx := (srcY*srcW + srcX) * 3
+			dstIdx := ((dstY+y)*targetW + (dstX + x)) * 3
+
+			if srcIdx+2 < len(src) && dstIdx+2 < len(target) {
+				target[dstIdx] = src[srcIdx]
+				target[dstIdx+1] = src[srcIdx+1]
+				target[dstIdx+2] = src[srcIdx+2]
+			}
+		}
+	}
+}
+
+// SaveImage saves rendered image to file
+func (r *Renderer) SaveImage(img *RenderedImage, filename, format string) error {
+	return r.SaveImageWithOptions(img, filename, &ImageSaveOptions{Format: format, Quality: 85})
+}
+
+// SaveImageWithOptions saves rendered image with options
+func (r *Renderer) SaveImageWithOptions(img *RenderedImage, filename string, opts *ImageSaveOptions) error {
+	if img == nil {
+		return fmt.Errorf("nil image")
+	}
+
+	// Create Go image
+	goImg := image.NewRGBA(image.Rect(0, 0, img.Width, img.Height))
+	for y := 0; y < img.Height; y++ {
+		for x := 0; x < img.Width; x++ {
+			idx := (y*img.Width + x) * 3
+			if idx+2 < len(img.Data) {
+				goImg.Set(x, y, color.RGBA{img.Data[idx], img.Data[idx+1], img.Data[idx+2], 255})
+			}
+		}
+	}
+
+	// Create file
+	f, err := createFile(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Encode based on format
+	format := strings.ToLower(opts.Format)
+	switch format {
+	case "png":
+		return png.Encode(f, goImg)
+	case "ppm":
+		return writePPM(f, goImg)
+	default:
+		return png.Encode(f, goImg)
+	}
+}
+
+// createFile creates a file for writing
+func createFile(filename string) (io.WriteCloser, error) {
+	return os.Create(filename)
+}
+
+// writePPM writes image in PPM format
+func writePPM(w io.Writer, img image.Image) error {
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	fmt.Fprintf(w, "P6\n%d %d\n255\n", width, height)
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			w.Write([]byte{byte(r >> 8), byte(g >> 8), byte(b >> 8)})
+		}
+	}
+
+	return nil
 }

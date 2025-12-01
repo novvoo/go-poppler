@@ -18,7 +18,7 @@ Go 语言实现的 PDF 处理库，提供与 Poppler 兼容的命令行工具。
 ## 安装
 
 ```bash
-go get github.com/user/go-poppler
+go get github.com/novvoo/go-poppler
 ```
 
 ## 编译
@@ -263,6 +263,23 @@ pdfdetach [选项] <PDF文件>
   -upw <string> 用户密码
 ```
 
+### pdfthumbnail - 生成缩略图
+
+生成 PDF 页面的缩略图。
+
+```bash
+pdfthumbnail [选项] <PDF文件> <输出前缀>
+
+选项:
+  -f <int>      起始页码 (默认: 1)
+  -l <int>      结束页码 (默认: 最后一页)
+  -size <int>   缩略图最大尺寸 (默认: 128)
+  -format <string> 输出格式 png/jpeg (默认: png)
+  -quality <int>   JPEG 质量 1-100 (默认: 85)
+  -opw <string> 所有者密码
+  -upw <string> 用户密码
+```
+
 ### pdfsig - 签名验证
 
 验证 PDF 文件中的数字签名。
@@ -286,7 +303,7 @@ package main
 
 import (
     "fmt"
-    "github.com/user/go-poppler/pkg/pdf"
+    "github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 func main() {
@@ -308,7 +325,7 @@ package main
 
 import (
     "fmt"
-    "github.com/user/go-poppler/pkg/pdf"
+    "github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 func main() {
@@ -337,7 +354,7 @@ package main
 
 import (
     "fmt"
-    "github.com/user/go-poppler/pkg/pdf"
+    "github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 func main() {
@@ -368,7 +385,8 @@ func main() {
 package main
 
 import (
-    "github.com/user/go-poppler/pkg/pdf"
+    "fmt"
+    "github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 func main() {
@@ -397,7 +415,7 @@ func main() {
 package main
 
 import (
-    "github.com/user/go-poppler/pkg/pdf"
+    "github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 func main() {
@@ -426,7 +444,7 @@ package main
 
 import (
     "fmt"
-    "github.com/user/go-poppler/pkg/pdf"
+    "github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 func main() {
@@ -457,7 +475,6 @@ go-poppler/
 │   ├── parser.go      # PDF 对象解析器
 │   ├── lexer.go       # 词法分析器
 │   ├── objects.go     # PDF 对象类型
-│   ├── stream.go      # 流解码器
 │   ├── text.go        # 文本提取
 │   ├── font.go        # 字体处理
 │   ├── image.go       # 图像提取
@@ -484,7 +501,8 @@ go-poppler/
 │   ├── pdfunite/      # 合并 PDF
 │   ├── pdfattach/     # 添加附件
 │   ├── pdfdetach/     # 提取附件
-│   └── pdfsig/        # 签名验证
+│   ├── pdfsig/        # 签名验证
+│   └── pdfthumbnail/  # 生成缩略图
 │
 ├── go.mod
 ├── go.sum

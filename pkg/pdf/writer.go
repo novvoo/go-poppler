@@ -51,7 +51,7 @@ func ExtractPage(doc *Document, pageNum int, outputFile string) error {
 
 	// Object 4: Contents (if any)
 	obj4Offset := 0
-	if contents != nil && len(contents) > 0 {
+	if len(contents) > 0 {
 		obj4Offset = buf.Len()
 		buf.WriteString("4 0 obj\n")
 		buf.WriteString(fmt.Sprintf("<< /Length %d >>\n", len(contents)))
@@ -153,7 +153,7 @@ func MergeDocuments(docs []*Document, outputFile string) error {
 			objNum++
 
 			// Contents object
-			if contents != nil && len(contents) > 0 {
+			if len(contents) > 0 {
 				contentsOffset := buf.Len()
 				offsets = append(offsets, contentsOffset)
 

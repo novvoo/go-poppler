@@ -45,7 +45,6 @@ type Token struct {
 type Lexer struct {
 	reader *bufio.Reader
 	pos    int64
-	buf    []byte
 }
 
 // NewLexer creates a new lexer for the given reader

@@ -110,7 +110,7 @@ func (d *Document) parse() error {
 	}
 	root, ok := rootObj.(Dictionary)
 	if !ok {
-		return fmt.Errorf("Root is not a dictionary")
+		return fmt.Errorf("root is not a dictionary")
 	}
 	d.Root = root
 
@@ -543,7 +543,7 @@ func (d *Document) parsePages() error {
 
 	pagesDict, ok := pagesObj.(Dictionary)
 	if !ok {
-		return fmt.Errorf("Pages is not a dictionary")
+		return fmt.Errorf("pages is not a dictionary")
 	}
 
 	return d.parsePagesNode(pagesDict, nil, 1)
@@ -589,7 +589,7 @@ func (d *Document) parsePagesNode(node Dictionary, inheritedResources Dictionary
 
 		kids, ok := kidsObj.(Array)
 		if !ok {
-			return fmt.Errorf("Kids is not an array")
+			return fmt.Errorf("kids is not an array")
 		}
 
 		for _, kidRef := range kids {
@@ -748,12 +748,7 @@ func (d *Document) Close() error {
 	return nil
 }
 
-// Reader interface for streaming
-type Reader struct {
-	doc *Document
-}
-
-// NewReader creates a reader from an io.Reader
+// NewReader creates a document from an io.Reader
 func NewReader(r io.Reader) (*Document, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {

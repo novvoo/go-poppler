@@ -10,14 +10,12 @@ import (
 
 // JBIG2Decoder decodes JBIG2 compressed image data
 type JBIG2Decoder struct {
-	data     []byte
-	globals  []byte
-	width    int
-	height   int
-	reader   *bitReader
-	segments []*jbig2Segment
-	pages    map[int]*jbig2Page
-	symbols  map[int][]*jbig2Bitmap
+	data    []byte
+	globals []byte
+	width   int
+	height  int
+	pages   map[int]*jbig2Page
+	symbols map[int][]*jbig2Bitmap
 }
 
 // jbig2Segment represents a JBIG2 segment
