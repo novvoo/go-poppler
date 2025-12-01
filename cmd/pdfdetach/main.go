@@ -1,70 +1,59 @@
+// pdfdetach - 从 PDF 中分离/提取附件
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/novvoo/go-poppler/pkg/pdf"
 )
 
+var (
+	listOnly   = flag.Bool("list", false, "list all embedded files")
+	saveAll    = flag.Bool("saveall", false, "save all embedded files")
+	saveName   = flag.String("save", "", "save specified embedded file")
+	saveNum    = flag.Int("savefile", 0, "save embedded file by number")
+	outputDir  = flag.String("o", ".", "output directory")
+	ownerPwd   = flag.String("opw", "", "owner password")
+	userPwd    = flag.String("upw", "", "user password")
+	printHelp  = flag.Bool("h", false, "print usage information")
+	printHelp2 = flag.Bool("help", false, "print usage information")
+	version    = flag.Bool("v", false, "print version info")
+)
+
 func main() {
-	var (
-		listOnly  bool
-		saveAll   bool
-		saveFile  int
-		outputDir string
-		ownerPw   string
-		userPw    string
-		printHelp bool
-		printVer  bool
-	)
-
-	flag.BoolVar(&listOnly, "list", false, "list all embedded files")
-	flag.BoolVar(&saveAll, "saveall", false, "save all embedded files")
-	flag.IntVar(&saveFile, "save", 0, "save the specified embedded file (1-based index)")
-	flag.StringVar(&outputDir, "o", ".", "output directory")
-	flag.StringVar(&ownerPw, "opw", "", "owner password")
-	flag.StringVar(&userPw, "upw", "", "user password")
-	flag.BoolVar(&printHelp, "h", false, "print usage information")
-	flag.BoolVar(&printHelp, "help", false, "print usage information")
-	flag.BoolVar(&printVer, "v", false, "print version info")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "pdfdetach version 1.0.0\n")
-		fmt.Fprintf(os.Stderr, "Copyright 2024 go-poppler authors\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <PDF-file>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-	}
-
 	flag.Parse()
 
-	if printVer {
+	if *printHelp || *printHelp2 {
+		printUsage()
+		os.Exit(0)
+	}
+
+	if *version {
 		fmt.Println("pdfdetach version 1.0.0")
+		fmt.Println("Copyright 2024 go-poppler authors")
 		os.Exit(0)
 	}
 
-	if printHelp {
-		flag.Usage()
-		os.Exit(0)
-	}
-
-	if flag.NArg() < 1 {
-		flag.Usage()
+	args := flag.Args()
+	if len(args) < 1 {
+		printUsage()
 		os.Exit(1)
 	}
 
-	inputFile := flag.Arg(0)
+	inputFile := args[0]
 
+	// 打开 PDF 文件
 	doc, err := pdf.Open(inputFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: Couldn't open file '%s': %v\n", inputFile, err)
+		fmt.Fprintf(os.Stderr, "Error opening PDF: %v\n", err)
 		os.Exit(1)
 	}
 	defer doc.Close()
 
-	// Get embedded files
+	// 获取附件列表
 	attachments, err := pdf.GetAttachments(doc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting attachments: %v\n", err)
@@ -72,59 +61,103 @@ func main() {
 	}
 
 	if len(attachments) == 0 {
-		fmt.Println("No embedded files found.")
+		fmt.Println("No embedded files in this document.")
 		os.Exit(0)
 	}
 
-	if listOnly {
-		fmt.Printf("%d embedded files:\n", len(attachments))
+	// 列出附件
+	if *listOnly || (!*saveAll && *saveName == "" && *saveNum == 0) {
+		fmt.Printf("%d embedded files\n", len(attachments))
 		for i, att := range attachments {
-			fmt.Printf("%d: %s", i+1, att.Name)
-			if att.Size > 0 {
-				fmt.Printf(", %d bytes", att.Size)
-			}
+			fmt.Printf("%d: %s\n", i+1, att.Name)
 			if att.Description != "" {
-				fmt.Printf(", %s", att.Description)
+				fmt.Printf("   Description: %s\n", att.Description)
 			}
-			fmt.Println()
+			fmt.Printf("   Size: %d bytes\n", att.Size)
+			if !att.CreationDate.IsZero() {
+				fmt.Printf("   Created: %s\n", att.CreationDate.Format("2006-01-02 15:04:05"))
+			}
+			if !att.ModDate.IsZero() {
+				fmt.Printf("   Modified: %s\n", att.ModDate.Format("2006-01-02 15:04:05"))
+			}
+			if att.MimeType != "" {
+				fmt.Printf("   MIME Type: %s\n", att.MimeType)
+			}
 		}
 		os.Exit(0)
 	}
 
-	if saveFile > 0 {
-		if saveFile > len(attachments) {
-			fmt.Fprintf(os.Stderr, "Error: Invalid file index %d (only %d files)\n", saveFile, len(attachments))
-			os.Exit(1)
-		}
-		att := attachments[saveFile-1]
-		err := att.SaveTo(outputDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error saving file: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Saved: %s\n", att.Name)
-		os.Exit(0)
+	// 创建输出目录
+	if err := os.MkdirAll(*outputDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+		os.Exit(1)
 	}
 
-	if saveAll {
+	// 保存所有附件
+	if *saveAll {
 		for _, att := range attachments {
-			err := att.SaveTo(outputDir)
-			if err != nil {
+			outputPath := filepath.Join(*outputDir, att.Name)
+			if err := saveAttachment(att, outputPath); err != nil {
 				fmt.Fprintf(os.Stderr, "Error saving %s: %v\n", att.Name, err)
-				continue
+			} else {
+				fmt.Printf("Saved: %s\n", outputPath)
 			}
-			fmt.Printf("Saved: %s\n", att.Name)
 		}
 		os.Exit(0)
 	}
 
-	// Default: list files
-	fmt.Printf("%d embedded files:\n", len(attachments))
-	for i, att := range attachments {
-		fmt.Printf("%d: %s\n", i+1, att.Name)
+	// 按名称保存
+	if *saveName != "" {
+		for _, att := range attachments {
+			if att.Name == *saveName {
+				outputPath := filepath.Join(*outputDir, att.Name)
+				if err := saveAttachment(att, outputPath); err != nil {
+					fmt.Fprintf(os.Stderr, "Error saving %s: %v\n", att.Name, err)
+					os.Exit(1)
+				}
+				fmt.Printf("Saved: %s\n", outputPath)
+				os.Exit(0)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "Attachment not found: %s\n", *saveName)
+		os.Exit(1)
 	}
 
-	// Suppress unused
-	_ = ownerPw
-	_ = userPw
+	// 按编号保存
+	if *saveNum > 0 {
+		if *saveNum > len(attachments) {
+			fmt.Fprintf(os.Stderr, "Invalid attachment number: %d (only %d attachments)\n", *saveNum, len(attachments))
+			os.Exit(1)
+		}
+		att := attachments[*saveNum-1]
+		outputPath := filepath.Join(*outputDir, att.Name)
+		if err := saveAttachment(att, outputPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving %s: %v\n", att.Name, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Saved: %s\n", outputPath)
+		os.Exit(0)
+	}
+}
+
+func saveAttachment(att *pdf.Attachment, outputPath string) error {
+	return att.SaveTo(filepath.Dir(outputPath))
+}
+
+func printUsage() {
+	fmt.Println("pdfdetach version 1.0.0")
+	fmt.Println("Copyright 2024 go-poppler authors")
+	fmt.Println()
+	fmt.Println("Usage: pdfdetach [options] <PDF-file>")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  -list         list all embedded files")
+	fmt.Println("  -saveall      save all embedded files")
+	fmt.Println("  -save <name>  save specified embedded file by name")
+	fmt.Println("  -savefile <n> save specified embedded file by number")
+	fmt.Println("  -o <dir>      output directory (default: current)")
+	fmt.Println("  -opw <pwd>    owner password")
+	fmt.Println("  -upw <pwd>    user password")
+	fmt.Println("  -h, -help     print usage information")
+	fmt.Println("  -v            print version info")
 }

@@ -22,7 +22,7 @@ go get github.com/user/go-poppler
 
 ## 命令行工具
 
-Go-Poppler 提供了与 Poppler 完全对应的 12 个命令行工具：
+Go-Poppler 提供了与 Poppler 完全对应的 13 个命令行工具：
 
 ### pdftotext - PDF 转文本
 
@@ -203,15 +203,26 @@ go run cmd/pdfseparate/main.go [选项] input.pdf output-%d.pdf
 go run cmd/pdfunite/main.go input1.pdf input2.pdf ... output.pdf
 ```
 
-### pdfattach - 附件管理
+### pdfattach - 添加附件
 
 ```bash
-go run cmd/pdfattach/main.go [选项] input.pdf
+go run cmd/pdfattach/main.go [选项] input.pdf file-to-attach output.pdf
 
 选项:
-  -list      列出附件
-  -save      保存附件
-  -savefile  保存指定附件
+  -replace   替换已存在的附件
+  -opw       所有者密码
+  -upw       用户密码
+```
+
+### pdfdetach - 提取附件
+
+```bash
+go run cmd/pdfdetach/main.go [选项] input.pdf
+
+选项:
+  -list      列出所有附件
+  -save      按名称保存附件
+  -savefile  按编号保存附件
   -saveall   保存所有附件
   -o         输出目录
   -opw       所有者密码
@@ -278,7 +289,7 @@ func main() {
 
 ## 与 Poppler 功能对比
 
-### 命令行工具 (12/12 ✅)
+### 命令行工具 (13/13 ✅)
 
 | Poppler 工具 | Go-Poppler | 状态 |
 |-------------|------------|------|
@@ -293,6 +304,7 @@ func main() {
 | pdfseparate | ✅ | 已实现 |
 | pdfunite | ✅ | 已实现 |
 | pdfattach | ✅ | 已实现 |
+| pdfdetach | ✅ | 已实现 |
 | pdfsig | ✅ | 已实现 |
 
 ### 加密支持
@@ -367,6 +379,7 @@ go-poppler/
     ├── pdfseparate/
     ├── pdfunite/
     ├── pdfattach/
+    ├── pdfdetach/
     └── pdfsig/
 ```
 
