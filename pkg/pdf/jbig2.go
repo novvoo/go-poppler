@@ -46,8 +46,8 @@ type jbig2Bitmap struct {
 	data   []byte
 }
 
-// bitReader reads bits from a byte slice
-type bitReader struct {
+// jbig2BitReader reads bits from a byte slice for JBIG2 decoding
+type jbig2BitReader struct {
 	data   []byte
 	pos    int
 	bitPos int
@@ -497,7 +497,7 @@ func (d *JBIG2Decoder) processPatternDict(seg *jbig2Segment) error {
 func (d *JBIG2Decoder) decodeMMR(bitmap *jbig2Bitmap, data []byte) {
 	// MMR is a variant of Group 4 fax encoding
 	// Simplified implementation
-	br := newBitReader(data)
+	br := newJBIG2BitReader(data)
 
 	for y := 0; y < bitmap.height; y++ {
 		x := 0
@@ -523,7 +523,7 @@ func (d *JBIG2Decoder) decodeMMR(bitmap *jbig2Bitmap, data []byte) {
 }
 
 // readMMRRunLength reads a run length from MMR encoded data
-func (d *JBIG2Decoder) readMMRRunLength(br *bitReader, white bool) int {
+func (d *JBIG2Decoder) readMMRRunLength(br *jbig2BitReader, white bool) int {
 	// Simplified MMR decoding
 	code := 0
 	for i := 0; i < 13; i++ {
@@ -705,13 +705,13 @@ func (b *jbig2Bitmap) setPixel(x, y, value int) {
 	}
 }
 
-// newBitReader creates a new bit reader
-func newBitReader(data []byte) *bitReader {
-	return &bitReader{data: data}
+// newJBIG2BitReader creates a new bit reader for JBIG2
+func newJBIG2BitReader(data []byte) *jbig2BitReader {
+	return &jbig2BitReader{data: data}
 }
 
 // readBit reads a single bit
-func (r *bitReader) readBit() int {
+func (r *jbig2BitReader) readBit() int {
 	if r.pos >= len(r.data) {
 		return -1
 	}
@@ -727,7 +727,7 @@ func (r *bitReader) readBit() int {
 }
 
 // readBits reads multiple bits
-func (r *bitReader) readBits(n int) int {
+func (r *jbig2BitReader) readBits(n int) int {
 	result := 0
 	for i := 0; i < n; i++ {
 		bit := r.readBit()

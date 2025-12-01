@@ -1,10 +1,33 @@
 # go-poppler
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/novvoo/go-poppler.svg)](https://pkg.go.dev/github.com/novvoo/go-poppler)
+[![Go Report Card](https://goreportcard.com/badge/github.com/novvoo/go-poppler)](https://goreportcard.com/report/github.com/novvoo/go-poppler)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Go 语言实现的 PDF 处理库，提供与 Poppler 兼容的命令行工具。
 
-## 特性
+## 🚀 快速开始
 
-- **纯 Go 实现**：无需依赖外部 C 库
+```bash
+# 安装
+go get github.com/novvoo/go-poppler
+
+# 编译所有工具
+go build ./...
+
+# 提取文本
+./pdftotext document.pdf output.txt
+
+# 查看 PDF 信息
+./pdfinfo document.pdf
+
+# 提取图像
+./pdfimages -png document.pdf images/
+```
+
+## ✨ 特性
+
+- **纯 Go 实现**：无需依赖外部 C 库，无 CGO
 - **完整的 PDF 解析**：支持 PDF 1.0 - 2.0 规范
 - **多种流解码**：FlateDecode、LZWDecode、ASCII85Decode、ASCIIHexDecode、RunLengthDecode、DCTDecode、JBIG2Decode
 - **加密支持**：RC4 和 AES 加密/解密
@@ -14,24 +37,61 @@ Go 语言实现的 PDF 处理库，提供与 Poppler 兼容的命令行工具。
 - **表单处理**：读取和填写 PDF 表单
 - **附件管理**：添加和提取嵌入文件
 - **数字签名**：验证 PDF 签名
+- **跨平台**：支持 Windows、Linux、macOS、ARM
 
-## 安装
+## 📦 安装
+
+### 作为库使用
 
 ```bash
 go get github.com/novvoo/go-poppler
 ```
 
-## 编译
+### 编译命令行工具
 
 ```bash
-# 编译所有命令行工具
+# 克隆仓库
+git clone https://github.com/novvoo/go-poppler.git
+cd go-poppler
+
+# 编译所有命令行工具（推荐：禁用 CGO 以获得纯静态二进制）
+CGO_ENABLED=0 go build ./...
+
+# Windows 下使用
+set CGO_ENABLED=0
 go build ./...
 
 # 或单独编译某个工具
-go build ./cmd/pdftotext
+CGO_ENABLED=0 go build ./cmd/pdftotext
+CGO_ENABLED=0 go build ./cmd/pdfinfo
 ```
 
-## 命令行工具
+> **注意**：本项目是纯 Go 实现，不依赖任何 C 库。建议在编译时设置 `CGO_ENABLED=0` 以确保生成完全静态链接的二进制文件，便于跨平台部署。
+
+### 安装到 GOPATH
+
+```bash
+go install github.com/novvoo/go-poppler/cmd/...@latest
+```
+
+## 🧪 测试
+
+```bash
+# 运行所有测试
+go test ./...
+
+# 运行测试并显示详细输出
+go test -v ./pkg/pdf/...
+
+# 运行测试并生成覆盖率报告
+go test -cover ./pkg/pdf/...
+
+# 生成 HTML 覆盖率报告
+go test -coverprofile=coverage.out ./pkg/pdf/...
+go tool cover -html=coverage.out -o coverage.html
+```
+
+## 🛠️ 命令行工具
 
 ### pdftotext - PDF 转文本
 
@@ -294,7 +354,7 @@ pdfsig [选项] <PDF文件>
   -upw <string> 用户密码
 ```
 
-## 库使用示例
+## 📚 库使用示例
 
 ### 打开 PDF 文件
 
@@ -466,82 +526,88 @@ func main() {
 }
 ```
 
-## 项目结构
+## 📁 项目结构
 
 ```
 go-poppler/
-├── pkg/pdf/           # 核心 PDF 库
-│   ├── document.go    # PDF 文档解析
-│   ├── parser.go      # PDF 对象解析器
-│   ├── lexer.go       # 词法分析器
-│   ├── objects.go     # PDF 对象类型
-│   ├── text.go        # 文本提取
-│   ├── font.go        # 字体处理
-│   ├── image.go       # 图像提取
-│   ├── render.go      # 页面渲染
-│   ├── writer.go      # PDF 写入
-│   ├── crypto.go      # 加密/解密
-│   ├── form.go        # 表单处理
-│   ├── annotation.go  # 注释处理
-│   ├── attachment.go  # 附件处理
-│   ├── signature.go   # 数字签名
-│   ├── html.go        # HTML 转换
-│   └── jbig2.go       # JBIG2 解码器
+├── pkg/pdf/              # 核心 PDF 库
+│   ├── document.go       # PDF 文档解析
+│   ├── document_test.go  # 文档测试
+│   ├── parser.go         # PDF 对象解析器
+│   ├── lexer.go          # 词法分析器
+│   ├── lexer_test.go     # 词法分析器测试
+│   ├── objects.go        # PDF 对象类型
+│   ├── objects_test.go   # 对象测试
+│   ├── text.go           # 文本提取
+│   ├── font.go           # 字体处理
+│   ├── image.go          # 图像提取
+│   ├── render.go         # 页面渲染
+│   ├── writer.go         # PDF 写入
+│   ├── crypto.go         # 加密/解密
+│   ├── form.go           # 表单处理
+│   ├── annotation.go     # 注释处理
+│   ├── attachment.go     # 附件处理
+│   ├── signature.go      # 数字签名
+│   ├── html.go           # HTML 转换
+│   ├── xfa.go            # XFA 表单
+│   ├── vector.go         # 矢量图形
+│   ├── advanced.go       # 高级功能
+│   └── jbig2.go          # JBIG2 解码器
 │
-├── cmd/               # 命令行工具
-│   ├── pdftotext/     # PDF 转文本
-│   ├── pdfinfo/       # PDF 信息
-│   ├── pdffonts/      # 字体信息
-│   ├── pdfimages/     # 图像提取
-│   ├── pdftoppm/      # PDF 转 PPM
-│   ├── pdftocairo/    # PDF 转图像
-│   ├── pdftops/       # PDF 转 PostScript
-│   ├── pdftohtml/     # PDF 转 HTML
-│   ├── pdfseparate/   # 拆分 PDF
-│   ├── pdfunite/      # 合并 PDF
-│   ├── pdfattach/     # 添加附件
-│   ├── pdfdetach/     # 提取附件
-│   ├── pdfsig/        # 签名验证
-│   └── pdfthumbnail/  # 生成缩略图
+├── cmd/                  # 命令行工具
+│   ├── pdftotext/        # PDF 转文本
+│   ├── pdfinfo/          # PDF 信息
+│   ├── pdffonts/         # 字体信息
+│   ├── pdfimages/        # 图像提取
+│   ├── pdftoppm/         # PDF 转 PPM
+│   ├── pdftocairo/       # PDF 转图像
+│   ├── pdftops/          # PDF 转 PostScript
+│   ├── pdftohtml/        # PDF 转 HTML
+│   ├── pdfseparate/      # 拆分 PDF
+│   ├── pdfunite/         # 合并 PDF
+│   ├── pdfattach/        # 添加附件
+│   ├── pdfdetach/        # 提取附件
+│   ├── pdfsig/           # 签名验证
+│   └── pdfthumbnail/     # 生成缩略图
 │
 ├── go.mod
 ├── go.sum
 └── README.md
 ```
 
-## 支持的 PDF 特性
+## ✅ 支持的 PDF 特性
 
-| 特性 | 状态 |
-|------|------|
-| PDF 1.0 - 2.0 | ✅ |
-| 交叉引用表 | ✅ |
-| 交叉引用流 | ✅ |
-| 对象流 | ✅ |
-| FlateDecode | ✅ |
-| LZWDecode | ✅ |
-| ASCII85Decode | ✅ |
-| ASCIIHexDecode | ✅ |
-| RunLengthDecode | ✅ |
-| DCTDecode (JPEG) | ✅ |
-| JBIG2Decode | ✅ |
-| CCITTFaxDecode | ⚠️ 基础支持 |
-| JPXDecode (JPEG2000) | ⚠️ 基础支持 |
-| RC4 加密 | ✅ |
-| AES 加密 | ✅ |
-| Type1 字体 | ✅ |
-| TrueType 字体 | ✅ |
-| CID 字体 | ✅ |
-| CMap | ✅ |
-| ToUnicode | ✅ |
-| AcroForm | ✅ |
-| XFA 表单 | ⚠️ 基础支持 |
-| 数字签名 | ✅ 基础验证 |
-| 嵌入文件 | ✅ |
-| 注释 | ✅ |
-| 书签 | ✅ |
-| 链接 | ✅ |
+| 特性 | 状态 | 说明 |
+|------|------|------|
+| PDF 1.0 - 2.0 | ✅ | 完整支持 |
+| 交叉引用表 | ✅ | 完整支持 |
+| 交叉引用流 | ✅ | 完整支持 |
+| 对象流 | ✅ | 完整支持 |
+| FlateDecode | ✅ | zlib 压缩 |
+| LZWDecode | ✅ | LZW 压缩 |
+| ASCII85Decode | ✅ | ASCII85 编码 |
+| ASCIIHexDecode | ✅ | 十六进制编码 |
+| RunLengthDecode | ✅ | 游程编码 |
+| DCTDecode (JPEG) | ✅ | JPEG 图像 |
+| JBIG2Decode | ✅ | JBIG2 图像 |
+| CCITTFaxDecode | ⚠️ | 仅返回原始数据 |
+| JPXDecode (JPEG2000) | ⚠️ | 仅返回原始数据 |
+| RC4 加密 | ✅ | 40/128-bit |
+| AES 加密 | ✅ | 128/256-bit |
+| Type1 字体 | ✅ | 完整支持 |
+| TrueType 字体 | ✅ | 完整支持 |
+| CID 字体 | ✅ | 完整支持 |
+| CMap | ✅ | 字符映射 |
+| ToUnicode | ✅ | Unicode 映射 |
+| AcroForm | ✅ | 交互式表单 |
+| XFA 表单 | ⚠️ | 基础解析 |
+| 数字签名 | ✅ | 基础验证 |
+| 嵌入文件 | ✅ | 附件支持 |
+| 注释 | ✅ | 完整支持 |
+| 书签 | ✅ | 大纲支持 |
+| 链接 | ✅ | 完整支持 |
 
-## 对标 Poppler
+## 🔄 对标 Poppler
 
 本项目旨在提供与 [Poppler](https://poppler.freedesktop.org/) 兼容的纯 Go 实现。
 
@@ -554,7 +620,7 @@ go-poppler/
 | pdffonts | ✅ pdffonts | 列出字体 | 完整 |
 | pdfimages | ✅ pdfimages | 提取图像 | 完整 |
 | pdftoppm | ✅ pdftoppm | 转 PPM/PNG/JPEG | 完整 |
-| pdftocairo | ✅ pdftocairo | 多格式渲染 | 部分（无 Cairo 后端） |
+| pdftocairo | ✅ pdftocairo | 多格式渲染 | 部分 |
 | pdftops | ✅ pdftops | 转 PostScript | 基础 |
 | pdftohtml | ✅ pdftohtml | 转 HTML | 完整 |
 | pdfseparate | ✅ pdfseparate | 拆分页面 | 完整 |
@@ -562,7 +628,7 @@ go-poppler/
 | pdfattach | ✅ pdfattach | 添加附件 | 完整 |
 | pdfdetach | ✅ pdfdetach | 提取附件 | 完整 |
 | pdfsig | ✅ pdfsig | 签名验证 | 基础 |
-| - | ✅ pdfthumbnail | 生成缩略图 | go-poppler 扩展 |
+| - | ✅ pdfthumbnail | 生成缩略图 | 扩展功能 |
 
 ### 核心功能对比
 
@@ -578,8 +644,8 @@ go-poppler/
 | ASCII85/Hex | ✅ | ✅ | 完整支持 |
 | DCTDecode (JPEG) | ✅ | ✅ | 完整支持 |
 | JBIG2Decode | ✅ | ✅ | 完整支持 |
-| CCITTFaxDecode | ✅ | ⚠️ | 基础支持，复杂扫描文档可能受限 |
-| JPXDecode (JPEG2000) | ✅ | ⚠️ | 基础支持 |
+| CCITTFaxDecode | ✅ | ⚠️ | 仅返回原始数据，无解码 |
+| JPXDecode (JPEG2000) | ✅ | ⚠️ | 仅返回原始数据，无解码 |
 | **加密** | | | |
 | RC4 40/128-bit | ✅ | ✅ | 完整支持 |
 | AES 128/256-bit | ✅ | ✅ | 完整支持 |
@@ -587,32 +653,25 @@ go-poppler/
 | Type1/TrueType | ✅ | ✅ | 完整支持 |
 | CID 字体 | ✅ | ✅ | 完整支持 |
 | CMap/ToUnicode | ✅ | ✅ | 完整支持 |
-| 字体缓存 | ✅ 高级 | ⚠️ 基础 | 性能差异 |
 | **渲染** | | | |
 | 栅格 (PPM/PNG/JPEG) | ✅ | ✅ | 完整支持 |
-| 矢量 (PS/SVG/PDF) | ✅ Cairo | ⚠️ 基础 | 无 Cairo 后端 |
-| 抗锯齿/渐变 | ✅ Splash | ⚠️ 基础 | 简化实现 |
+| 矢量 (PS/SVG/PDF) | ✅ | ⚠️ | 基础生成，无Cairo后端 |
 | **表单** | | | |
 | AcroForm | ✅ | ✅ | 完整支持 |
-| XFA 表单 | ❌ | ⚠️ | 基础解析 |
+| XFA 表单 | ❌ | ⚠️ | 仅解析XML结构 |
 | **签名** | | | |
 | 基础验证 | ✅ | ✅ | 完整支持 |
-| OCSP/CRL | ✅ NSS | ❌ | 不支持 |
-| **其他** | | | |
-| OCG 图层 | ✅ | ❌ | 不支持 |
-| JavaScript | ❌ | ❌ | 均不支持 |
-| 注释/书签/链接 | ✅ | ✅ | 完整支持 |
-| 嵌入文件 | ✅ | ✅ | 完整支持 |
+| OCSP/CRL | ✅ | ❌ | 不支持 |
 
 ### go-poppler 优势
 
 | 特性 | 说明 |
 |------|------|
-| **纯 Go 实现** | 无 CGO 依赖，无需安装 Poppler 库 |
-| **跨平台编译** | 单一二进制，支持 Windows/Linux/macOS/ARM |
-| **容器友好** | 镜像体积小，无外部依赖 |
-| **易于集成** | 作为 Go 库直接导入使用 |
-| **静态链接** | 部署简单，无动态库依赖 |
+| 🔧 **纯 Go 实现** | 无 CGO 依赖，无需安装 Poppler 库 |
+| 🌍 **跨平台编译** | 单一二进制，支持 Windows/Linux/macOS/ARM |
+| 🐳 **容器友好** | 镜像体积小，无外部依赖 |
+| 📦 **易于集成** | 作为 Go 库直接导入使用 |
+| 🔗 **静态链接** | 部署简单，无动态库依赖 |
 
 ### 已知限制
 
@@ -622,8 +681,6 @@ go-poppler/
 | 无 Cairo 渲染后端 | 矢量输出质量受限 | 高质量 PS/SVG 使用原版 Poppler |
 | 无 OCSP/CRL 验证 | 企业签名合规性不足 | 企业级签名验证使用原版 Poppler |
 | 无 OCG 支持 | 多图层 PDF 无法管理 | CAD/工程图纸使用原版 Poppler |
-| 内存优化基础 | 大文件处理效率较低 | 批量处理大文件考虑原版 Poppler |
-| 畸形文档容错基础 | 损坏 PDF 可能解析失败 | 关键业务使用原版 Poppler |
 
 ### 适用场景
 
@@ -635,10 +692,47 @@ go-poppler/
 - 嵌入式系统或资源受限环境
 - 作为 Go 应用的库集成
 
-## 许可证
+**⚠️ 建议使用原版 Poppler：**
+- 需要高质量矢量输出
+- 处理复杂扫描文档
+- 企业级签名验证
+- 处理多图层 PDF
 
-MIT License
-
-## 贡献
+## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
+
+### 开发指南
+
+```bash
+# 克隆仓库
+git clone https://github.com/novvoo/go-poppler.git
+cd go-poppler
+
+# 安装依赖
+go mod download
+
+# 运行测试
+go test ./...
+
+# 构建（推荐禁用 CGO）
+CGO_ENABLED=0 go build ./...
+
+# Windows 下构建
+set CGO_ENABLED=0
+go build ./...
+
+# 交叉编译示例
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./...
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
+```
+
+## 📄 许可证
+
+MIT License - 详见 [LICENSE](LICENSE) 文件
+
+## 🙏 致谢
+
+- [Poppler](https://poppler.freedesktop.org/) - 本项目的参考实现
+- [PDF Reference](https://www.adobe.com/devnet/pdf/pdf_reference.html) - Adobe PDF 规范
