@@ -616,6 +616,12 @@ func (r Reference) String() string {
 	return fmt.Sprintf("%d %d R", r.ObjectNumber, r.GenerationNumber)
 }
 
+// Operator represents a PDF content stream operator
+type Operator string
+
+func (o Operator) Type() ObjectType { return ObjName } // Operators are similar to names
+func (o Operator) String() string   { return string(o) }
+
 // decodeUTF16BE decodes UTF-16BE encoded bytes to string
 func decodeUTF16BE(data []byte) string {
 	if len(data)%2 != 0 {

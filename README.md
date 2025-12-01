@@ -535,11 +535,105 @@ go-poppler/
 | ToUnicode | ✅ |
 | AcroForm | ✅ |
 | XFA 表单 | ⚠️ 基础支持 |
-| 数字签名 | ✅ |
+| 数字签名 | ✅ 基础验证 |
 | 嵌入文件 | ✅ |
 | 注释 | ✅ |
 | 书签 | ✅ |
 | 链接 | ✅ |
+
+## 对标 Poppler
+
+本项目旨在提供与 [Poppler](https://poppler.freedesktop.org/) 兼容的纯 Go 实现。
+
+### 命令行工具对照
+
+| Poppler 工具 | go-poppler 工具 | 功能 | 兼容性 |
+|-------------|-----------------|------|--------|
+| pdftotext | ✅ pdftotext | 提取文本 | 完整 |
+| pdfinfo | ✅ pdfinfo | 显示信息 | 完整 |
+| pdffonts | ✅ pdffonts | 列出字体 | 完整 |
+| pdfimages | ✅ pdfimages | 提取图像 | 完整 |
+| pdftoppm | ✅ pdftoppm | 转 PPM/PNG/JPEG | 完整 |
+| pdftocairo | ✅ pdftocairo | 多格式渲染 | 部分（无 Cairo 后端） |
+| pdftops | ✅ pdftops | 转 PostScript | 基础 |
+| pdftohtml | ✅ pdftohtml | 转 HTML | 完整 |
+| pdfseparate | ✅ pdfseparate | 拆分页面 | 完整 |
+| pdfunite | ✅ pdfunite | 合并文件 | 完整 |
+| pdfattach | ✅ pdfattach | 添加附件 | 完整 |
+| pdfdetach | ✅ pdfdetach | 提取附件 | 完整 |
+| pdfsig | ✅ pdfsig | 签名验证 | 基础 |
+| - | ✅ pdfthumbnail | 生成缩略图 | go-poppler 扩展 |
+
+### 核心功能对比
+
+| 功能领域 | Poppler | go-poppler | 备注 |
+|---------|---------|------------|------|
+| **PDF 解析** | | | |
+| PDF 1.0-2.0 规范 | ✅ | ✅ | 完整支持 |
+| 交叉引用表/流 | ✅ | ✅ | 完整支持 |
+| 对象流 | ✅ | ✅ | 完整支持 |
+| **流解码器** | | | |
+| FlateDecode (zlib) | ✅ | ✅ | 完整支持 |
+| LZWDecode | ✅ | ✅ | 完整支持 |
+| ASCII85/Hex | ✅ | ✅ | 完整支持 |
+| DCTDecode (JPEG) | ✅ | ✅ | 完整支持 |
+| JBIG2Decode | ✅ | ✅ | 完整支持 |
+| CCITTFaxDecode | ✅ | ⚠️ | 基础支持，复杂扫描文档可能受限 |
+| JPXDecode (JPEG2000) | ✅ | ⚠️ | 基础支持 |
+| **加密** | | | |
+| RC4 40/128-bit | ✅ | ✅ | 完整支持 |
+| AES 128/256-bit | ✅ | ✅ | 完整支持 |
+| **字体** | | | |
+| Type1/TrueType | ✅ | ✅ | 完整支持 |
+| CID 字体 | ✅ | ✅ | 完整支持 |
+| CMap/ToUnicode | ✅ | ✅ | 完整支持 |
+| 字体缓存 | ✅ 高级 | ⚠️ 基础 | 性能差异 |
+| **渲染** | | | |
+| 栅格 (PPM/PNG/JPEG) | ✅ | ✅ | 完整支持 |
+| 矢量 (PS/SVG/PDF) | ✅ Cairo | ⚠️ 基础 | 无 Cairo 后端 |
+| 抗锯齿/渐变 | ✅ Splash | ⚠️ 基础 | 简化实现 |
+| **表单** | | | |
+| AcroForm | ✅ | ✅ | 完整支持 |
+| XFA 表单 | ❌ | ⚠️ | 基础解析 |
+| **签名** | | | |
+| 基础验证 | ✅ | ✅ | 完整支持 |
+| OCSP/CRL | ✅ NSS | ❌ | 不支持 |
+| **其他** | | | |
+| OCG 图层 | ✅ | ❌ | 不支持 |
+| JavaScript | ❌ | ❌ | 均不支持 |
+| 注释/书签/链接 | ✅ | ✅ | 完整支持 |
+| 嵌入文件 | ✅ | ✅ | 完整支持 |
+
+### go-poppler 优势
+
+| 特性 | 说明 |
+|------|------|
+| **纯 Go 实现** | 无 CGO 依赖，无需安装 Poppler 库 |
+| **跨平台编译** | 单一二进制，支持 Windows/Linux/macOS/ARM |
+| **容器友好** | 镜像体积小，无外部依赖 |
+| **易于集成** | 作为 Go 库直接导入使用 |
+| **静态链接** | 部署简单，无动态库依赖 |
+
+### 已知限制
+
+| 限制 | 影响 | 建议 |
+|------|------|------|
+| CCITTFaxDecode 基础支持 | 部分扫描 PDF 解码不完整 | 复杂扫描文档使用原版 Poppler |
+| 无 Cairo 渲染后端 | 矢量输出质量受限 | 高质量 PS/SVG 使用原版 Poppler |
+| 无 OCSP/CRL 验证 | 企业签名合规性不足 | 企业级签名验证使用原版 Poppler |
+| 无 OCG 支持 | 多图层 PDF 无法管理 | CAD/工程图纸使用原版 Poppler |
+| 内存优化基础 | 大文件处理效率较低 | 批量处理大文件考虑原版 Poppler |
+| 畸形文档容错基础 | 损坏 PDF 可能解析失败 | 关键业务使用原版 Poppler |
+
+### 适用场景
+
+**✅ 推荐使用 go-poppler：**
+- 需要纯 Go 实现，避免 CGO 复杂性
+- 简单的文本/图像提取任务
+- 跨平台部署（特别是 Windows）
+- 容器化/Serverless 环境
+- 嵌入式系统或资源受限环境
+- 作为 Go 应用的库集成
 
 ## 许可证
 
