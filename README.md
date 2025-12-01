@@ -1,114 +1,234 @@
-# go-poppler
+# Go-Poppler
 
-Go 语言实现的 PDF 处理库，对标 poppler-utils 工具集。
+Go-Poppler 是 Poppler PDF 工具库的纯 Go 语言实现。无需外部 C 库依赖，可跨平台编译使用。
 
 ## 功能特性
 
-- **pdftotext** - 从 PDF 提取文本
-- **pdfinfo** - 显示 PDF 文档信息
-- **pdfimages** - 从 PDF 提取图像
-- **pdfseparate** - 将 PDF 分离为单页文件
-- **pdfunite** - 合并多个 PDF 文件
+- ✅ 完整的 PDF 解析器（支持 PDF 1.0-2.0）
+- ✅ 文本提取（多编码支持）
+- ✅ 图像提取和渲染
+- ✅ 字体分析
+- ✅ 表单字段提取
+- ✅ 附件管理
+- ✅ 数字签名验证
+- ✅ 加密 PDF 支持（RC4/AES）
+- ✅ 多种输出格式（HTML、PostScript、PNG、JPEG、PPM、TIFF、SVG）
 
 ## 安装
 
 ```bash
-go install github.com/novvoo/go-poppler/cmd/pdftotext@latest
-go install github.com/novvoo/go-poppler/cmd/pdfinfo@latest
-go install github.com/novvoo/go-poppler/cmd/pdfimages@latest
-go install github.com/novvoo/go-poppler/cmd/pdfseparate@latest
-go install github.com/novvoo/go-poppler/cmd/pdfunite@latest
+go get github.com/user/go-poppler
 ```
 
-## 使用方法
+## 命令行工具
 
-### pdftotext - 文本提取
+Go-Poppler 提供了与 Poppler 完全对应的 12 个命令行工具：
+
+### pdftotext - PDF 转文本
 
 ```bash
-pdftotext [options] <PDF-file> [<text-file>]
+go run cmd/pdftotext/main.go [选项] input.pdf [output.txt]
 
 选项:
-  -f int        起始页码 (默认 1)
-  -l int        结束页码 (默认 0，表示最后一页)
-  -layout       保持原始布局
-  -raw          保持内容流顺序
-  -nopgbrk      不插入分页符
-  -enc string   输出编码 (默认 "UTF-8")
-  -eol string   行尾格式: unix, dos, mac (默认 "unix")
-  -opw string   所有者密码
-  -upw string   用户密码
-  -h, -help     显示帮助
-  -v            显示版本
+  -f int     起始页码 (默认 1)
+  -l int     结束页码 (默认 0，表示最后一页)
+  -layout    保持原始布局
+  -raw       按内容流顺序输出
+  -htmlmeta  输出 HTML 格式（带元数据）
+  -bbox      输出带边界框的 HTML
+  -enc       输出编码 (默认 UTF-8)
+  -eol       行尾格式: unix, dos, mac
+  -nopgbrk   不插入分页符
+  -opw       所有者密码
+  -upw       用户密码
 ```
 
-### pdfinfo - 文档信息
+### pdfinfo - PDF 信息
 
 ```bash
-pdfinfo [options] <PDF-file>
+go run cmd/pdfinfo/main.go [选项] input.pdf
 
 选项:
-  -f int        起始页码 (默认 1)
-  -l int        结束页码 (默认 0)
-  -box          显示页面边界框
-  -meta         显示元数据
-  -js           显示 JavaScript
-  -struct       显示结构信息
-  -rawdates     显示原始日期格式
-  -enc string   文本编码 (默认 "UTF-8")
-  -opw string   所有者密码
-  -upw string   用户密码
-  -h, -help     显示帮助
-  -v            显示版本
+  -f int     起始页码
+  -l int     结束页码
+  -box       显示页面边界框
+  -meta      显示 XMP 元数据
+  -js        显示 JavaScript
+  -rawdates  显示原始日期格式
+  -enc       输出编码
+  -opw       所有者密码
+  -upw       用户密码
+```
+
+### pdffonts - 字体列表
+
+```bash
+go run cmd/pdffonts/main.go [选项] input.pdf
+
+选项:
+  -f int     起始页码
+  -l int     结束页码
+  -subst     显示字体替换
+  -opw       所有者密码
+  -upw       用户密码
 ```
 
 ### pdfimages - 图像提取
 
 ```bash
-pdfimages [options] <PDF-file> <image-root>
+go run cmd/pdfimages/main.go [选项] input.pdf output-root
 
 选项:
-  -f int        起始页码 (默认 1)
-  -l int        结束页码 (默认 0)
-  -png          输出 PNG 格式
-  -j            输出 JPEG 格式
-  -all          输出所有格式
-  -list         仅列出图像信息
-  -opw string   所有者密码
-  -upw string   用户密码
-  -h, -help     显示帮助
-  -v            显示版本
+  -f int     起始页码
+  -l int     结束页码
+  -j         输出 JPEG 格式
+  -png       输出 PNG 格式
+  -tiff      输出 TIFF 格式
+  -all       提取所有图像
+  -list      仅列出图像信息
+  -opw       所有者密码
+  -upw       用户密码
 ```
 
-### pdfseparate - 页面分离
+### pdftoppm - PDF 转 PPM 图像
 
 ```bash
-pdfseparate [options] <PDF-file> <PDF-page-pattern>
-
-PDF-page-pattern 应包含 %d 作为页码占位符
+go run cmd/pdftoppm/main.go [选项] input.pdf output-root
 
 选项:
-  -f int        起始页码 (默认 1)
-  -l int        结束页码 (默认 0)
-  -opw string   所有者密码
-  -upw string   用户密码
-  -h, -help     显示帮助
-  -v            显示版本
-
-示例:
-  pdfseparate input.pdf page-%d.pdf
+  -f int     起始页码
+  -l int     结束页码
+  -r int     分辨率 DPI (默认 150)
+  -rx int    X 方向分辨率
+  -ry int    Y 方向分辨率
+  -scale-to int  缩放到指定大小
+  -x int     裁剪 X 坐标
+  -y int     裁剪 Y 坐标
+  -W int     裁剪宽度
+  -H int     裁剪高度
+  -mono      单色输出
+  -gray      灰度输出
+  -png       输出 PNG 格式
+  -jpeg      输出 JPEG 格式
+  -tiff      输出 TIFF 格式
+  -opw       所有者密码
+  -upw       用户密码
 ```
 
-### pdfunite - 文件合并
+### pdftocairo - Cairo 渲染
 
 ```bash
-pdfunite [options] <PDF-file-1> ... <PDF-file-n> <output-PDF>
+go run cmd/pdftocairo/main.go [选项] input.pdf [output]
 
 选项:
-  -h, -help     显示帮助
-  -v            显示版本
+  -f int     起始页码
+  -l int     结束页码
+  -r int     分辨率 DPI
+  -scale-to int  缩放到指定大小
+  -x int     裁剪 X 坐标
+  -y int     裁剪 Y 坐标
+  -W int     裁剪宽度
+  -H int     裁剪高度
+  -png       输出 PNG 格式
+  -jpeg      输出 JPEG 格式
+  -tiff      输出 TIFF 格式
+  -ps        输出 PostScript 格式
+  -eps       输出 EPS 格式
+  -pdf       输出 PDF 格式
+  -svg       输出 SVG 格式
+  -opw       所有者密码
+  -upw       用户密码
+```
 
-示例:
-  pdfunite page1.pdf page2.pdf page3.pdf output.pdf
+### pdftops - PDF 转 PostScript
+
+```bash
+go run cmd/pdftops/main.go [选项] input.pdf [output.ps]
+
+选项:
+  -f int     起始页码
+  -l int     结束页码
+  -level1    生成 Level 1 PostScript
+  -level1sep 生成 Level 1 分色 PostScript
+  -level2    生成 Level 2 PostScript
+  -level2sep 生成 Level 2 分色 PostScript
+  -level3    生成 Level 3 PostScript
+  -level3sep 生成 Level 3 分色 PostScript
+  -eps       生成 EPS 格式
+  -form      生成 PostScript 表单
+  -opi       生成 OPI 注释
+  -r int     分辨率
+  -paper     纸张大小
+  -nocrop    不裁剪到 CropBox
+  -expand    扩展到纸张大小
+  -noshrink  不缩小到纸张大小
+  -nocenter  不居中
+  -duplex    双面打印
+  -opw       所有者密码
+  -upw       用户密码
+```
+
+### pdftohtml - PDF 转 HTML
+
+```bash
+go run cmd/pdftohtml/main.go [选项] input.pdf [output.html]
+
+选项:
+  -f int     起始页码
+  -l int     结束页码
+  -c         生成复杂 HTML（保持布局）
+  -s         生成单个 HTML 文件
+  -i         忽略图像
+  -noframes  不生成框架
+  -stdout    输出到标准输出
+  -xml       输出 XML 格式
+  -enc       输出编码
+  -opw       所有者密码
+  -upw       用户密码
+```
+
+### pdfseparate - 分离页面
+
+```bash
+go run cmd/pdfseparate/main.go [选项] input.pdf output-%d.pdf
+
+选项:
+  -f int     起始页码
+  -l int     结束页码
+```
+
+### pdfunite - 合并 PDF
+
+```bash
+go run cmd/pdfunite/main.go input1.pdf input2.pdf ... output.pdf
+```
+
+### pdfattach - 附件管理
+
+```bash
+go run cmd/pdfattach/main.go [选项] input.pdf
+
+选项:
+  -list      列出附件
+  -save      保存附件
+  -savefile  保存指定附件
+  -saveall   保存所有附件
+  -o         输出目录
+  -opw       所有者密码
+  -upw       用户密码
+```
+
+### pdfsig - 签名验证
+
+```bash
+go run cmd/pdfsig/main.go [选项] input.pdf
+
+选项:
+  -nocert    不验证证书
+  -nofail    即使验证失败也返回 0
+  -dump      导出签名
+  -opw       所有者密码
+  -upw       用户密码
 ```
 
 ## 作为库使用
@@ -118,58 +238,137 @@ package main
 
 import (
     "fmt"
-    "github.com/novvoo/go-poppler/pkg/pdf"
+    "github.com/user/go-poppler/pkg/pdf"
 )
 
 func main() {
-    // 打开 PDF
-    doc, err := pdf.Open("document.pdf")
+    // 打开 PDF 文件
+    doc, err := pdf.Open("input.pdf")
     if err != nil {
         panic(err)
     }
     defer doc.Close()
 
     // 获取文档信息
+    info := doc.GetInfo()
+    fmt.Printf("标题: %s\n", info.Title)
+    fmt.Printf("作者: %s\n", info.Author)
     fmt.Printf("页数: %d\n", doc.NumPages())
-    fmt.Printf("标题: %s\n", doc.Info.Title)
-    fmt.Printf("作者: %s\n", doc.Info.Author)
 
     // 提取文本
     extractor := pdf.NewTextExtractor(doc)
-    text, _ := extractor.ExtractPage(1)
-    fmt.Println(text)
-
-    // 提取图像
-    imgExtractor := pdf.NewImageExtractor(doc)
-    images, _ := imgExtractor.ExtractPage(1)
-    for i, img := range images {
-        img.Save(fmt.Sprintf("image-%d.%s", i, img.Format))
+    for i := 1; i <= doc.NumPages(); i++ {
+        text, _ := extractor.ExtractPage(i)
+        fmt.Printf("第 %d 页:\n%s\n", i, text)
     }
 
-    // 分离页面
-    pdf.ExtractPage(doc, 1, "page1.pdf")
+    // 提取图像
+    images := doc.ExtractImages()
+    for i, img := range images {
+        fmt.Printf("图像 %d: %dx%d, %d bpp\n", i+1, img.Width, img.Height, img.BitsPerComponent)
+    }
 
-    // 合并文件
-    pdf.MergeFiles([]string{"a.pdf", "b.pdf"}, "merged.pdf")
+    // 获取表单字段
+    fields := doc.GetFormFields()
+    for _, field := range fields {
+        fmt.Printf("字段: %s = %s\n", field.Name, field.Value)
+    }
 }
 ```
 
-## 支持的 PDF 特性
+## 与 Poppler 功能对比
 
-- PDF 1.0 - 1.7 版本
-- 文本提取（支持多种编码）
-- 图像提取（JPEG、PNG、PPM）
-- 页面分离与合并
-- 压缩流解码（FlateDecode、DCTDecode、ASCII85Decode、ASCIIHexDecode）
-- 交叉引用表和流
-- 文档信息字典
+### 命令行工具 (12/12 ✅)
 
-## 限制
+| Poppler 工具 | Go-Poppler | 状态 |
+|-------------|------------|------|
+| pdftotext | ✅ | 已实现 |
+| pdfinfo | ✅ | 已实现 |
+| pdffonts | ✅ | 已实现 |
+| pdfimages | ✅ | 已实现 |
+| pdftoppm | ✅ | 已实现 |
+| pdftocairo | ✅ | 已实现 |
+| pdftops | ✅ | 已实现 |
+| pdftohtml | ✅ | 已实现 |
+| pdfseparate | ✅ | 已实现 |
+| pdfunite | ✅ | 已实现 |
+| pdfattach | ✅ | 已实现 |
+| pdfsig | ✅ | 已实现 |
 
-- 不支持加密 PDF（密码保护）
-- 不支持 PDF 2.0 特性
-- 不支持 JBIG2、JPEG2000 压缩
-- 不支持表单和注释提取
+### 加密支持
+
+| 加密类型 | 状态 |
+|---------|------|
+| RC4 40-bit | ✅ |
+| RC4 128-bit | ✅ |
+| AES-128 | ✅ |
+| AES-256 | ✅ |
+
+### 压缩格式支持
+
+| 格式 | 状态 |
+|-----|------|
+| FlateDecode | ✅ |
+| LZWDecode | ✅ |
+| ASCII85Decode | ✅ |
+| ASCIIHexDecode | ✅ |
+| RunLengthDecode | ✅ |
+| DCTDecode (JPEG) | ✅ |
+| CCITTFaxDecode | ✅ |
+| JBIG2Decode | ⚠️ 基础支持 |
+| JPXDecode (JPEG2000) | ⚠️ 基础支持 |
+
+### 输出格式
+
+| 格式 | 状态 |
+|-----|------|
+| 纯文本 | ✅ |
+| HTML | ✅ |
+| XML | ✅ |
+| PostScript | ✅ |
+| EPS | ✅ |
+| PPM | ✅ |
+| PNG | ✅ |
+| JPEG | ✅ |
+| TIFF | ✅ |
+| SVG | ✅ |
+| PDF | ✅ |
+
+## 项目结构
+
+```
+go-poppler/
+├── go.mod                    # Go 模块定义
+├── README.md                 # 项目说明
+├── pkg/pdf/                  # PDF 核心库
+│   ├── objects.go           # PDF 对象类型
+│   ├── lexer.go             # 词法分析器
+│   ├── parser.go            # 语法解析器
+│   ├── document.go          # 文档处理
+│   ├── text.go              # 文本提取
+│   ├── font.go              # 字体处理
+│   ├── image.go             # 图像处理
+│   ├── render.go            # 渲染引擎
+│   ├── html.go              # HTML 转换
+│   ├── writer.go            # PDF 写入
+│   ├── attachment.go        # 附件处理
+│   ├── signature.go         # 数字签名
+│   ├── crypto.go            # 加密支持
+│   └── form.go              # 表单支持
+└── cmd/                      # 命令行工具
+    ├── pdftotext/
+    ├── pdfinfo/
+    ├── pdffonts/
+    ├── pdfimages/
+    ├── pdftoppm/
+    ├── pdftocairo/
+    ├── pdftops/
+    ├── pdftohtml/
+    ├── pdfseparate/
+    ├── pdfunite/
+    ├── pdfattach/
+    └── pdfsig/
+```
 
 ## 许可证
 
