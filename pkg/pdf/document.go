@@ -12,14 +12,15 @@ import (
 
 // Document represents a PDF document
 type Document struct {
-	data    []byte
-	Version string
-	Trailer Dictionary
-	Root    Dictionary
-	Info    Dictionary
-	Pages   []*Page
-	objects map[int]Object
-	xref    map[int]xrefEntry
+	data     []byte
+	Version  string
+	Trailer  Dictionary
+	Root     Dictionary
+	Info     Dictionary
+	Pages    []*Page
+	objects  map[int]Object
+	xref     map[int]xrefEntry
+	security *SecurityHandler
 }
 
 // xrefEntry represents an entry in the cross-reference table
