@@ -124,16 +124,34 @@ func main() {
 				img.Size, img.Ratio)
 		}
 	} else {
-		// Extract mode
+		// Extract mode - determine format
 		format := "png"
+		ext := "png"
+		quality := 85
+
 		if *ppm {
 			format = "ppm"
-		} else if *jpeg || *tiff {
+			ext = "ppm"
+		} else if *jpeg {
+			format = "jpeg"
+			ext = "jpg"
+		} else if *tiff {
+			format = "tiff"
+			ext = "tif"
+		} else if *jp2 {
+			format = "native"
+			ext = "jp2"
+		} else if *ccitt || *jbig2 {
 			format = "native"
 		}
 
 		for i, img := range images {
-			filename := fmt.Sprintf("%s-%03d.%s", imageRoot, i, getExtension(img, format))
+			// Determine extension based on format and native type
+			imgExt := ext
+			if format == "native" {
+				imgExt = getNativeExtension(img)
+			}
+			filename := fmt.Sprintf("%s-%03d.%s", imageRoot, i, imgExt)
 
 			// Create directory if needed
 			dir := filepath.Dir(filename)
@@ -141,7 +159,7 @@ func main() {
 				os.MkdirAll(dir, 0755)
 			}
 
-			data, err := extractor.GetImageData(img, format)
+			data, err := extractor.GetImageDataWithFormat(img, format, quality)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not extract image %d: %v\n", i, err)
 				continue
@@ -156,21 +174,16 @@ func main() {
 	}
 }
 
-func getExtension(img *pdf.ImageInfo, format string) string {
-	if format == "native" {
-		switch strings.ToLower(img.Filter) {
-		case "dctdecode":
-			return "jpg"
-		case "jpxdecode":
-			return "jp2"
-		case "ccittfaxdecode":
-			return "tif"
-		case "jbig2decode":
-			return "jb2"
-		}
-	}
-	if format == "ppm" {
-		return "ppm"
+func getNativeExtension(img *pdf.ImageInfo) string {
+	switch strings.ToLower(img.Filter) {
+	case "dctdecode":
+		return "jpg"
+	case "jpxdecode":
+		return "jp2"
+	case "ccittfaxdecode":
+		return "tif"
+	case "jbig2decode":
+		return "jb2"
 	}
 	return "png"
 }

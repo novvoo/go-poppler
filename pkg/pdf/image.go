@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"io"
 )
@@ -256,16 +257,31 @@ func (e *ImageExtractor) GetImageData(img *ImageInfo, format string) ([]byte, er
 func (e *ImageExtractor) toPNG(info *ImageInfo, data []byte) ([]byte, error) {
 	var img image.Image
 
-	switch info.ColorSpace {
-	case "gray", "icc-gray", "DeviceGray":
-		img = e.createGrayImage(info, data)
-	case "rgb", "icc-rgb", "DeviceRGB":
-		img = e.createRGBImage(info, data)
-	case "cmyk", "icc-cmyk", "DeviceCMYK":
-		img = e.createCMYKImage(info, data)
+	// Check if data is already in a compressed format (JPEG, JPEG2000)
+	switch info.Filter {
+	case "DCTDecode":
+		// Data is JPEG, decode it first
+		jpegImg, err := jpeg.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode JPEG: %w", err)
+		}
+		img = jpegImg
+	case "JPXDecode":
+		// JPEG2000 - not supported by standard library, return error
+		return nil, fmt.Errorf("JPEG2000 decoding not supported, use -jp2 flag for native format")
 	default:
-		// Try to create grayscale image
-		img = e.createGrayImage(info, data)
+		// Raw pixel data, create image based on color space
+		switch info.ColorSpace {
+		case "gray", "icc-gray", "DeviceGray":
+			img = e.createGrayImage(info, data)
+		case "rgb", "icc-rgb", "DeviceRGB":
+			img = e.createRGBImage(info, data)
+		case "cmyk", "icc-cmyk", "DeviceCMYK":
+			img = e.createCMYKImage(info, data)
+		default:
+			// Try to create grayscale image
+			img = e.createGrayImage(info, data)
+		}
 	}
 
 	var buf bytes.Buffer
@@ -372,6 +388,158 @@ func (e *ImageExtractor) createCMYKImage(info *ImageInfo, data []byte) *image.RG
 	}
 
 	return img
+}
+
+// toJPEG converts image data to JPEG format
+func (e *ImageExtractor) toJPEG(info *ImageInfo, data []byte, quality int) ([]byte, error) {
+	// If already JPEG, return as-is
+	if info.Filter == "DCTDecode" {
+		return data, nil
+	}
+
+	var img image.Image
+
+	switch info.ColorSpace {
+	case "gray", "icc-gray", "DeviceGray":
+		img = e.createGrayImage(info, data)
+	case "rgb", "icc-rgb", "DeviceRGB":
+		img = e.createRGBImage(info, data)
+	case "cmyk", "icc-cmyk", "DeviceCMYK":
+		img = e.createCMYKImage(info, data)
+	default:
+		img = e.createGrayImage(info, data)
+	}
+
+	var buf bytes.Buffer
+	opts := &jpeg.Options{Quality: quality}
+	if err := jpeg.Encode(&buf, img, opts); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// toTIFF converts image data to TIFF format
+func (e *ImageExtractor) toTIFF(info *ImageInfo, data []byte) ([]byte, error) {
+	var img image.Image
+
+	switch info.Filter {
+	case "DCTDecode":
+		jpegImg, err := jpeg.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode JPEG: %w", err)
+		}
+		img = jpegImg
+	default:
+		switch info.ColorSpace {
+		case "gray", "icc-gray", "DeviceGray":
+			img = e.createGrayImage(info, data)
+		case "rgb", "icc-rgb", "DeviceRGB":
+			img = e.createRGBImage(info, data)
+		case "cmyk", "icc-cmyk", "DeviceCMYK":
+			img = e.createCMYKImage(info, data)
+		default:
+			img = e.createGrayImage(info, data)
+		}
+	}
+
+	return encodeTIFF(img)
+}
+
+// encodeTIFF encodes image to TIFF format
+func encodeTIFF(img image.Image) ([]byte, error) {
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	// Calculate sizes
+	rowBytes := width * 3
+	imageDataSize := rowBytes * height
+
+	numEntries := uint16(10)
+	ifdSize := 2 + int(numEntries)*12 + 4
+	bpsOffset := 8 + ifdSize
+	dataOffset := bpsOffset + 6
+
+	var buf bytes.Buffer
+
+	// TIFF Header
+	buf.Write([]byte{0x49, 0x49}) // Little endian
+	writeTIFFUint16(&buf, 42)
+	writeTIFFUint32(&buf, 8) // IFD offset
+
+	// IFD
+	writeTIFFUint16(&buf, numEntries)
+
+	writeTIFFTag(&buf, 256, 3, 1, uint32(width))
+	writeTIFFTag(&buf, 257, 3, 1, uint32(height))
+	writeTIFFTag(&buf, 258, 3, 3, uint32(bpsOffset))
+	writeTIFFTag(&buf, 259, 3, 1, 1)
+	writeTIFFTag(&buf, 262, 3, 1, 2)
+	writeTIFFTag(&buf, 273, 4, 1, uint32(dataOffset))
+	writeTIFFTag(&buf, 277, 3, 1, 3)
+	writeTIFFTag(&buf, 278, 3, 1, uint32(height))
+	writeTIFFTag(&buf, 279, 4, 1, uint32(imageDataSize))
+	writeTIFFTag(&buf, 284, 3, 1, 1)
+
+	writeTIFFUint32(&buf, 0) // Next IFD
+
+	// BitsPerSample values
+	writeTIFFUint16(&buf, 8)
+	writeTIFFUint16(&buf, 8)
+	writeTIFFUint16(&buf, 8)
+
+	// Image data
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			buf.WriteByte(byte(r >> 8))
+			buf.WriteByte(byte(g >> 8))
+			buf.WriteByte(byte(b >> 8))
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+func writeTIFFUint16(buf *bytes.Buffer, v uint16) {
+	buf.WriteByte(byte(v))
+	buf.WriteByte(byte(v >> 8))
+}
+
+func writeTIFFUint32(buf *bytes.Buffer, v uint32) {
+	buf.WriteByte(byte(v))
+	buf.WriteByte(byte(v >> 8))
+	buf.WriteByte(byte(v >> 16))
+	buf.WriteByte(byte(v >> 24))
+}
+
+func writeTIFFTag(buf *bytes.Buffer, tag, typ uint16, count, value uint32) {
+	writeTIFFUint16(buf, tag)
+	writeTIFFUint16(buf, typ)
+	writeTIFFUint32(buf, count)
+	writeTIFFUint32(buf, value)
+}
+
+// GetImageDataWithFormat extracts image data in the specified format with options
+func (e *ImageExtractor) GetImageDataWithFormat(img *ImageInfo, format string, quality int) ([]byte, error) {
+	data, err := img.stream.Decode()
+	if err != nil {
+		return nil, err
+	}
+
+	switch format {
+	case "native":
+		return data, nil
+	case "ppm":
+		return e.toPPM(img, data)
+	case "jpeg", "jpg":
+		return e.toJPEG(img, data, quality)
+	case "tiff", "tif":
+		return e.toTIFF(img, data)
+	default:
+		return e.toPNG(img, data)
+	}
 }
 
 // DecodeFlate decodes Flate (zlib) compressed data

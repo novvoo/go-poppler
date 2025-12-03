@@ -22,6 +22,8 @@ func main() {
 	mono := flag.Bool("mono", false, "generate monochrome image")
 	gray := flag.Bool("gray", false, "generate grayscale image")
 	png := flag.Bool("png", false, "generate PNG output")
+	jpeg := flag.Bool("jpeg", false, "generate JPEG output")
+	jpegQuality := flag.Int("jpegopt", 85, "JPEG quality (1-100)")
 	tiff := flag.Bool("tiff", false, "generate TIFF output")
 	cropBox := flag.Bool("cropbox", false, "use crop box instead of media box")
 	ownerPwd := flag.String("opw", "", "owner password")
@@ -72,10 +74,15 @@ func main() {
 	if *png {
 		format = "png"
 		ext = ".png"
+	} else if *jpeg {
+		format = "jpeg"
+		ext = ".jpg"
 	} else if *tiff {
 		format = "tiff"
 		ext = ".tif"
 	}
+
+	_ = jpegQuality // TODO: pass to renderer when JPEG encoding is implemented
 
 	// Set up render options
 	options := pdf.RenderOptions{

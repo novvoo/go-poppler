@@ -1,4 +1,6 @@
 *.exe
+*.txt
 *.md
 !README.md
 *.pdf
+images

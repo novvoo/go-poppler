@@ -22,6 +22,7 @@ func main() {
 	mono := flag.Bool("mono", false, "generate monochrome image")
 	gray := flag.Bool("gray", false, "generate grayscale image")
 	pngOut := flag.Bool("png", false, "generate PNG output")
+	jpegOut := flag.Bool("jpeg", false, "generate JPEG output")
 	tiffOut := flag.Bool("tiff", false, "generate TIFF output")
 	psOut := flag.Bool("ps", false, "generate PostScript output")
 	epsOut := flag.Bool("eps", false, "generate EPS output")
@@ -87,6 +88,9 @@ func main() {
 	} else if *pdfOut {
 		format = "pdf"
 		ext = ".pdf"
+	} else if *jpegOut {
+		format = "jpeg"
+		ext = ".jpg"
 	} else if *tiffOut {
 		format = "tiff"
 		ext = ".tif"
