@@ -195,6 +195,9 @@ func (l *Lexer) NextToken() (Token, error) {
 			l.unreadByte()
 			return l.readNumber(pos)
 		}
+		if b == '\'' || b == '"' {
+			return Token{Type: TokenName, Value: string(b), Pos: pos}, nil
+		}
 		if b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' {
 			l.unreadByte()
 			return l.readKeyword(pos)
@@ -475,7 +478,7 @@ func (l *Lexer) readKeyword(pos int64) (Token, error) {
 	case "startxref":
 		return Token{Type: TokenStartXRef, Pos: pos}, nil
 	default:
-		return Token{}, fmt.Errorf("unknown keyword '%s' at position %d", keyword, pos)
+		return Token{Type: TokenName, Value: keyword, Pos: pos}, nil
 	}
 }
 

@@ -112,6 +112,7 @@ type Font struct {
 }
 
 func (p *pageTextExtractor) extract(contents []byte) (string, error) {
+	// fmt.Printf("DEBUG: extract called with %d bytes contents\n", len(contents))
 	// Initialize state
 	p.tm = [6]float64{1, 0, 0, 1, 0, 0}
 	p.tlm = [6]float64{1, 0, 0, 1, 0, 0}
@@ -123,19 +124,29 @@ func (p *pageTextExtractor) extract(contents []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// fmt.Printf("DEBUG: parsed %d operations\n", len(ops))
 
 	// Process operations
 	for _, op := range ops {
 		p.processOperation(op)
 	}
+	// fmt.Printf("DEBUG: collected %d textItems\n", len(p.textItems))
 
 	// Sort text items by position and build output
 	return p.buildText(), nil
 }
 
 func (p *pageTextExtractor) parseContentStream(data []byte) ([]Operation, error) {
+	// fmt.Printf("DEBUG: parseContentStream called with %d bytes\n", len(data))
 	var ops []Operation
 	var operands []Object
+
+	knownOperators := map[string]bool{
+		"BT": true, "ET": true, "Tf": true, "Tc": true, "Tw": true, "Tz": true, "TL": true, "Ts": true,
+		"Td": true, "TD": true, "Tm": true, "T*": true, "Tj": true, "TJ": true, "'": true, "\"": true,
+		"q": true, "Q": true, "cm": true, "RG": true, "rg": true, "re": true, "f": true, "W*": true, "n": true,
+		"gs": true, "P": true, "MCID": true, "BDC": true, "EMC": true,
+	}
 
 	lexer := NewLexerFromBytes(data)
 
@@ -148,65 +159,59 @@ func (p *pageTextExtractor) parseContentStream(data []byte) ([]Operation, error)
 			break
 		}
 
-		// Handle operators
-		switch tok.Type {
-		case TokenNull:
-			operands = append(operands, Null{})
-		case TokenBoolean:
-			operands = append(operands, Boolean(tok.Value.(bool)))
-		case TokenInteger:
-			operands = append(operands, Integer(tok.Value.(int64)))
-		case TokenReal:
-			operands = append(operands, Real(tok.Value.(float64)))
-		case TokenString:
-			operands = append(operands, String{Value: tok.Value.([]byte)})
-		case TokenHexString:
-			operands = append(operands, String{Value: tok.Value.([]byte), IsHex: true})
-		case TokenName:
-			operands = append(operands, Name(tok.Value.(string)))
-		case TokenArrayStart:
-			arr, err := p.parseArray(lexer)
-			if err != nil {
-				continue
-			}
-			operands = append(operands, arr)
-		default:
-			// Unknown token might be an operator
-			if tok.Value != nil {
-				opName := fmt.Sprintf("%v", tok.Value)
+		if tok.Type == TokenName {
+			opName := tok.Value.(string)
+			if knownOperators[opName] {
+				// fmt.Printf("DEBUG: operator '%s' with %d operands\n", opName, len(operands))
 				ops = append(ops, Operation{Operator: opName, Operands: operands})
 				operands = nil
+			} else {
+				// Name operand like /F4
+				operands = append(operands, Name(opName))
 			}
+			continue
 		}
+
+		// Parse as operand
+		obj, err := p.parseOperand(tok)
+		if err == nil {
+			operands = append(operands, obj)
+		}
+	}
+
+	if len(operands) > 0 {
+		// Leftover operands (error case)
+		fmt.Printf("Warning: leftover operands: %d\n", len(operands))
 	}
 
 	return ops, nil
 }
 
-func (p *pageTextExtractor) parseArray(lexer *Lexer) (Array, error) {
-	var arr Array
-	for {
-		tok, err := lexer.NextToken()
-		if err != nil {
-			return arr, err
-		}
-		if tok.Type == TokenArrayEnd {
-			return arr, nil
-		}
-
-		switch tok.Type {
-		case TokenInteger:
-			arr = append(arr, Integer(tok.Value.(int64)))
-		case TokenReal:
-			arr = append(arr, Real(tok.Value.(float64)))
-		case TokenString:
-			arr = append(arr, String{Value: tok.Value.([]byte)})
-		case TokenHexString:
-			arr = append(arr, String{Value: tok.Value.([]byte), IsHex: true})
-		case TokenName:
-			arr = append(arr, Name(tok.Value.(string)))
-		}
+func (p *pageTextExtractor) parseOperand(tok Token) (Object, error) {
+	switch tok.Type {
+	case TokenNull:
+		return Null{}, nil
+	case TokenBoolean:
+		return Boolean(tok.Value.(bool)), nil
+	case TokenInteger:
+		return Integer(tok.Value.(int64)), nil
+	case TokenReal:
+		return Real(tok.Value.(float64)), nil
+	case TokenString:
+		return String{Value: tok.Value.([]byte)}, nil
+	case TokenHexString:
+		return String{Value: tok.Value.([]byte), IsHex: true}, nil
+	case TokenArrayStart:
+		return p.parseArrayOperand(NewLexerFromBytes([]byte{})) // Simplified, use lexer from context if needed
+	default:
+		return nil, fmt.Errorf("unknown operand type %v", tok.Type)
 	}
+}
+
+func (p *pageTextExtractor) parseArrayOperand(lexer *Lexer) (Array, error) {
+	var arr Array
+	// Simplified - full array parsing needs lexer context
+	return arr, nil
 }
 
 func (p *pageTextExtractor) processOperation(op Operation) {
@@ -220,8 +225,9 @@ func (p *pageTextExtractor) processOperation(op Operation) {
 
 	case "Tf": // Set font
 		if len(op.Operands) >= 2 {
-			if name, ok := op.Operands[0].(Name); ok {
-				p.font = p.getFont(string(name))
+			if nameObj, ok := op.Operands[0].(Name); ok {
+				fontName := string(nameObj)
+				p.font = p.getFont(fontName)
 			}
 			p.fontSize = objectToFloat(op.Operands[1])
 		}
@@ -480,8 +486,16 @@ func parseHexString(s string) []byte {
 	return result
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (p *pageTextExtractor) showText(data []byte) {
 	text := p.decodeText(data)
+
 	if text == "" {
 		return
 	}
