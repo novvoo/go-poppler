@@ -29,7 +29,7 @@ go build ./...
 
 - **纯 Go 实现**：无需依赖外部 C 库，无 CGO
 - **完整的 PDF 解析**：支持 PDF 1.0 - 2.0 规范
-- **多种流解码**：FlateDecode、LZWDecode、ASCII85Decode、ASCIIHexDecode、RunLengthDecode、DCTDecode、JBIG2Decode
+- **多种流解码**：FlateDecode、LZWDecode、ASCII85Decode、ASCIIHexDecode、RunLengthDecode、DCTDecode、JBIG2Decode、JPXDecode (JPEG2000)
 - **加密支持**：RC4 和 AES 加密/解密
 - **文本提取**：支持多种字符编码和 CMap
 - **图像提取**：支持 JPEG、PNG、JBIG2 等格式
@@ -553,7 +553,9 @@ go-poppler/
 │   ├── vector.go         # 矢量图形
 │   ├── advanced.go       # 高级功能
 │   ├── jbig2.go          # JBIG2 解码器
-│   └── ccitt.go          # CCITT Group 3/4 传真解码器
+│   ├── ccitt.go          # CCITT Group 3/4 传真解码器
+│   ├── jpeg2000.go       # JPEG2000 (JPX) 解码器
+│   └── cairo.go          # Cairo 风格 2D 图形渲染
 │
 ├── cmd/                  # 命令行工具
 │   ├── pdftotext/        # PDF 转文本
@@ -592,7 +594,7 @@ go-poppler/
 | DCTDecode (JPEG) | ✅ | JPEG 图像 |
 | JBIG2Decode | ✅ | JBIG2 图像 |
 | CCITTFaxDecode | ✅ | Group 3/4 传真 |
-| JPXDecode (JPEG2000) | ⚠️ | 仅返回原始数据 |
+| JPXDecode (JPEG2000) | ✅ | 完整解码支持 |
 | RC4 加密 | ✅ | 40/128-bit |
 | AES 加密 | ✅ | 128/256-bit |
 | Type1 字体 | ✅ | 完整支持 |
@@ -648,7 +650,7 @@ go-poppler/
 | DCTDecode (JPEG) | ✅ | ✅ | 完整支持 |
 | JBIG2Decode | ✅ | ✅ | 完整支持 |
 | CCITTFaxDecode | ✅ | ✅ | 完整支持 Group 3/4 |
-| JPXDecode (JPEG2000) | ✅ | ⚠️ | 仅返回原始数据，无解码 |
+| JPXDecode (JPEG2000) | ✅ | ✅ | 完整解码支持（纯 Go 实现） |
 | **加密** | | | |
 | RC4 40/128-bit | ✅ | ✅ | 完整支持 |
 | AES 128/256-bit | ✅ | ✅ | 完整支持 |
@@ -658,7 +660,8 @@ go-poppler/
 | CMap/ToUnicode | ✅ | ✅ | 完整支持 |
 | **渲染** | | | |
 | 栅格 (PPM/PNG/JPEG) | ✅ | ✅ | 完整支持 |
-| 矢量 (PS/SVG/PDF) | ✅ | ⚠️ | 基础生成，无Cairo后端 |
+| 矢量 (PS/SVG/PDF) | ✅ | ✅ | Cairo 风格渲染器 |
+| 2D 图形上下文 | ✅ | ✅ | 路径、变换、裁剪等 |
 | **表单** | | | |
 | AcroForm | ✅ | ✅ | 完整支持 |
 | XFA 表单 | ❌ | ⚠️ | 仅解析XML结构 |
