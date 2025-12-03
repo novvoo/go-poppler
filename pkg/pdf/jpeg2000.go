@@ -13,7 +13,6 @@ import (
 // JPEG2000 marker codes
 const (
 	jp2SignatureBox = 0x6A502020 // 'jP  '
-	jp2FileTypeBox  = 0x66747970 // 'ftyp'
 	jp2HeaderBox    = 0x6A703268 // 'jp2h'
 	jp2ImageHeader  = 0x69686472 // 'ihdr'
 	jp2ColorSpec    = 0x636F6C72 // 'colr'
@@ -21,14 +20,11 @@ const (
 
 	// Codestream markers
 	j2kSOC = 0xFF4F // Start of codestream
-	j2kSOT = 0xFF90 // Start of tile-part
 	j2kSOD = 0xFF93 // Start of data
 	j2kEOC = 0xFFD9 // End of codestream
 	j2kSIZ = 0xFF51 // Image and tile size
 	j2kCOD = 0xFF52 // Coding style default
-	j2kCOC = 0xFF53 // Coding style component
 	j2kQCD = 0xFF5C // Quantization default
-	j2kQCC = 0xFF5D // Quantization component
 )
 
 // JPEG2000Decoder decodes JPEG2000 images
@@ -39,15 +35,7 @@ type JPEG2000Decoder struct {
 	bitDepth   int
 	signed     bool
 	colorSpace string
-	tiles      []tile
 	data       []byte
-}
-
-type tile struct {
-	index  int
-	x0, y0 int
-	x1, y1 int
-	data   []byte
 }
 
 // JPEG2000 errors
@@ -618,7 +606,6 @@ func GetJPEG2000Info(data []byte) (*JPEG2000Info, error) {
 // JPEG2000Reader implements io.Reader for streaming JPEG2000 decoding
 type JPEG2000Reader struct {
 	reader io.Reader
-	buffer []byte
 }
 
 // NewJPEG2000Reader creates a new JPEG2000 reader
