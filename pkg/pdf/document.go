@@ -914,6 +914,11 @@ func parsePDFDate(s string) time.Time {
 		s = s[2:]
 	}
 
+	// After removing prefix, check if there's enough content for a year
+	if len(s) < 4 {
+		return time.Time{}
+	}
+
 	// Parse components
 	var year, month, day, hour, min, sec int
 	var tzHour, tzMin int

@@ -163,10 +163,24 @@ func TestMultiplyMatrix(t *testing.T) {
 		t.Errorf("expected translation (100, 200), got (%f, %f)", result[4], result[5])
 	}
 
-	// Scale matrix
+	// Scale matrix applied to translation
+	// In PDF matrix multiplication: result = a * b
+	// For [2,0,0,2,0,0] * [1,0,0,1,100,200]:
+	// e' = a.e*b.a + a.f*b.c + b.e = 0*1 + 0*0 + 100 = 100
+	// f' = a.e*b.b + a.f*b.d + b.f = 0*0 + 0*1 + 200 = 200
 	scale := [6]float64{2, 0, 0, 2, 0, 0}
 	result = multiplyMatrix(scale, translate)
 
+	// The translation values are preserved, not scaled
+	if result[4] != 100 || result[5] != 200 {
+		t.Errorf("expected translation (100, 200), got (%f, %f)", result[4], result[5])
+	}
+
+	// To scale translation, apply translate first then scale
+	// [1,0,0,1,100,200] * [2,0,0,2,0,0]:
+	// e' = 100*2 + 200*0 + 0 = 200
+	// f' = 100*0 + 200*2 + 0 = 400
+	result = multiplyMatrix(translate, scale)
 	if result[4] != 200 || result[5] != 400 {
 		t.Errorf("expected scaled translation (200, 400), got (%f, %f)", result[4], result[5])
 	}

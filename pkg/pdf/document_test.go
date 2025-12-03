@@ -120,20 +120,27 @@ func TestRectangle(t *testing.T) {
 func TestParsePDFDate(t *testing.T) {
 	tests := []struct {
 		input    string
-		expected int // year
+		expected int  // year
+		isZero   bool // whether result should be zero time
 	}{
-		{"D:20240101120000", 2024},
-		{"D:20231225", 2023},
-		{"20220615", 2022},
-		{"", 0},
-		{"D:", 0},
+		{"D:20240101120000", 2024, false},
+		{"D:20231225", 2023, false},
+		{"20220615", 2022, false},
+		{"", 1, true},   // time.Time{}.Year() returns 1
+		{"D:", 1, true}, // time.Time{}.Year() returns 1
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			result := parsePDFDate(tt.input)
-			if result.Year() != tt.expected {
-				t.Errorf("Expected year %d, got %d", tt.expected, result.Year())
+			if tt.isZero {
+				if !result.IsZero() {
+					t.Errorf("Expected zero time for input %q", tt.input)
+				}
+			} else {
+				if result.Year() != tt.expected {
+					t.Errorf("Expected year %d, got %d", tt.expected, result.Year())
+				}
 			}
 		})
 	}

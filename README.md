@@ -552,7 +552,8 @@ go-poppler/
 │   ├── xfa.go            # XFA 表单
 │   ├── vector.go         # 矢量图形
 │   ├── advanced.go       # 高级功能
-│   └── jbig2.go          # JBIG2 解码器
+│   ├── jbig2.go          # JBIG2 解码器
+│   └── ccitt.go          # CCITT Group 3/4 传真解码器
 │
 ├── cmd/                  # 命令行工具
 │   ├── pdftotext/        # PDF 转文本
@@ -590,7 +591,7 @@ go-poppler/
 | RunLengthDecode | ✅ | 游程编码 |
 | DCTDecode (JPEG) | ✅ | JPEG 图像 |
 | JBIG2Decode | ✅ | JBIG2 图像 |
-| CCITTFaxDecode | ⚠️ | 仅返回原始数据 |
+| CCITTFaxDecode | ✅ | Group 3/4 传真 |
 | JPXDecode (JPEG2000) | ⚠️ | 仅返回原始数据 |
 | RC4 加密 | ✅ | 40/128-bit |
 | AES 加密 | ✅ | 128/256-bit |
@@ -601,7 +602,9 @@ go-poppler/
 | ToUnicode | ✅ | Unicode 映射 |
 | AcroForm | ✅ | 交互式表单 |
 | XFA 表单 | ⚠️ | 基础解析 |
-| 数字签名 | ✅ | 基础验证 |
+| 数字签名 | ✅ | 完整验证 |
+| OCSP 验证 | ✅ | 在线证书状态 |
+| CRL 验证 | ✅ | 证书吊销列表 |
 | 嵌入文件 | ✅ | 附件支持 |
 | 注释 | ✅ | 完整支持 |
 | 书签 | ✅ | 大纲支持 |
@@ -644,7 +647,7 @@ go-poppler/
 | ASCII85/Hex | ✅ | ✅ | 完整支持 |
 | DCTDecode (JPEG) | ✅ | ✅ | 完整支持 |
 | JBIG2Decode | ✅ | ✅ | 完整支持 |
-| CCITTFaxDecode | ✅ | ⚠️ | 仅返回原始数据，无解码 |
+| CCITTFaxDecode | ✅ | ✅ | 完整支持 Group 3/4 |
 | JPXDecode (JPEG2000) | ✅ | ⚠️ | 仅返回原始数据，无解码 |
 | **加密** | | | |
 | RC4 40/128-bit | ✅ | ✅ | 完整支持 |
@@ -661,7 +664,7 @@ go-poppler/
 | XFA 表单 | ❌ | ⚠️ | 仅解析XML结构 |
 | **签名** | | | |
 | 基础验证 | ✅ | ✅ | 完整支持 |
-| OCSP/CRL | ✅ | ❌ | 不支持 |
+| OCSP/CRL | ✅ | ✅ | 完整支持 |
 
 ### go-poppler 优势
 
@@ -677,9 +680,7 @@ go-poppler/
 
 | 限制 | 影响 | 建议 |
 |------|------|------|
-| CCITTFaxDecode 基础支持 | 部分扫描 PDF 解码不完整 | 复杂扫描文档使用原版 Poppler |
 | 无 Cairo 渲染后端 | 矢量输出质量受限 | 高质量 PS/SVG 使用原版 Poppler |
-| 无 OCSP/CRL 验证 | 企业签名合规性不足 | 企业级签名验证使用原版 Poppler |
 | 无 OCG 支持 | 多图层 PDF 无法管理 | CAD/工程图纸使用原版 Poppler |
 
 ### 适用场景
@@ -695,7 +696,6 @@ go-poppler/
 **⚠️ 建议使用原版 Poppler：**
 - 需要高质量矢量输出
 - 处理复杂扫描文档
-- 企业级签名验证
 - 处理多图层 PDF
 
 ## 🤝 贡献
