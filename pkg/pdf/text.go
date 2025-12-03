@@ -179,10 +179,7 @@ func (p *pageTextExtractor) parseContentStream(data []byte) ([]Operation, error)
 		}
 	}
 
-	if len(operands) > 0 {
-		// Leftover operands (error case)
-		fmt.Printf("Warning: leftover operands: %d\n", len(operands))
-	}
+	// Ignore leftover operands
 
 	return ops, nil
 }
@@ -208,7 +205,7 @@ func (p *pageTextExtractor) parseOperand(tok Token) (Object, error) {
 	}
 }
 
-func (p *pageTextExtractor) parseArrayOperand(lexer *Lexer) (Array, error) {
+func (p *pageTextExtractor) parseArrayOperand(_ *Lexer) (Array, error) {
 	var arr Array
 	// Simplified - full array parsing needs lexer context
 	return arr, nil

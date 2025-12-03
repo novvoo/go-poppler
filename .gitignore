@@ -3,4 +3,6 @@
 *.md
 !README.md
 *.pdf
+!test.pdf
 images
+*.png
