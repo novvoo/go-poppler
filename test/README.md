@@ -4,14 +4,22 @@
 
 ## 📁 文件说明
 
+### 测试数据文件
 - `test.pdf` - 测试用PDF文件
 - `test.txt` - 原始文本文件
 - `output.txt` - 实际输出文本
 - `test_verify.txt` - 用于验证的参考文本
-- `pdf_basic_test.go` - 基础PDF功能单元测试
-- `pdf_advanced_test.go` - 高级PDF功能测试
-- `pdf_markdown_test.go` - Markdown转换功能测试
-- `integration_test.go` - 集成测试和端到端测试
+- `markdown_example.md` - Markdown示例文件
+
+### 测试文件
+- `pdf_basic_test.go` - 基础PDF功能单元测试（文件打开、信息获取、文本提取等）
+- `pdf_advanced_test.go` - 高级PDF功能测试（多页处理、性能基准测试）
+- `pdf_markdown_test.go` - Markdown转换功能测试（转换、标题检测、图像处理等）
+- `pdf_document_test.go` - PDF文档对象测试（文档创建、页面操作、矩形计算等）
+- `pdf_objects_test.go` - PDF对象类型测试（Integer、Real、Boolean、Name、String、Array、Dictionary等）
+- `pdf_parser_test.go` - PDF解析器测试（词法分析、对象解析）
+- `pdf_text_extraction_test.go` - 文本提取选项测试
+- `pdf_markdown_helpers_test.go` - Markdown辅助函数测试（内部函数通过公共API间接测试）
 
 ## 🧪 运行测试
 
@@ -89,6 +97,52 @@ go test -short ./test
 - **TestPageInfo** - 测试页面信息获取
 - **TestErrorHandling** - 测试错误处理
 
+### 文档对象测试 (pdf_document_test.go)
+
+- **TestNewDocument** - 测试从字节数据创建文档
+- **TestInvalidPDF** - 测试无效PDF数据处理
+- **TestDocumentInfo** - 测试文档信息提取
+- **TestNumPages** - 测试页数获取
+- **TestGetPage** - 测试页面检索
+- **TestRectangle** - 测试矩形操作
+- **TestDocumentClose** - 测试文档关闭
+
+### PDF对象测试 (pdf_objects_test.go)
+
+- **TestInteger** - 测试整数类型
+- **TestReal** - 测试实数类型
+- **TestBoolean** - 测试布尔类型
+- **TestName** - 测试名称类型
+- **TestString** - 测试字符串类型
+- **TestStringText** - 测试字符串文本方法
+- **TestArray** - 测试数组类型
+- **TestDictionary** - 测试字典类型
+- **TestDictionaryGetArray** - 测试字典数组获取
+- **TestDictionaryGetDict** - 测试字典嵌套获取
+- **TestReference** - 测试引用类型
+- **TestNull** - 测试空值类型
+- **TestStream** - 测试流对象
+- **TestStreamDecode** - 测试流解码
+- **TestOperator** - 测试操作符类型
+
+### 解析器测试 (pdf_parser_test.go)
+
+- **TestLexerReadLine** - 测试词法分析器行读取
+- **TestParserParseInteger** - 测试整数解析
+- **TestParserParseReal** - 测试实数解析
+- **TestParserParseBoolean** - 测试布尔值解析
+- **TestParserParseNull** - 测试空值解析
+- **TestParserParseName** - 测试名称解析
+- **TestParserParseString** - 测试字符串解析
+- **TestParserParseHexString** - 测试十六进制字符串解析
+- **TestParserParseArray** - 测试数组解析
+- **TestParserParseDictionary** - 测试字典解析
+- **TestParserParseReference** - 测试引用解析
+
+### 文本提取测试 (pdf_text_extraction_test.go)
+
+- **TestTextExtractionOptions** - 测试文本提取选项
+
 ### Markdown转换测试 (pdf_markdown_test.go)
 
 - **TestMarkdownConversion** - 测试PDF转Markdown基本功能
@@ -103,22 +157,12 @@ go test -short ./test
 
 ### 高级功能测试 (pdf_advanced_test.go)
 
-- **TestAdvancedFeatures** - 高级功能测试
-- **TestConcurrentAccess** - 并发访问测试
-- **TestMemoryUsage** - 内存使用测试
-
-### 集成测试 (integration_test.go)
-
-- **TestFullWorkflow** - 完整工作流测试
 - **TestMultiPageProcessing** - 多页处理测试
-- **TestOutputComparison** - 输出对比测试
-- **TestLargeFileHandling** - 大文件处理测试
 
 ### 性能测试
 
+- **BenchmarkPDFOpen** - PDF打开性能
 - **BenchmarkTextExtraction** - 文本提取性能
-- **BenchmarkPageRendering** - 页面渲染性能
-- **BenchmarkMarkdownConversion** - Markdown转换性能
 
 ## 🎯 测试覆盖的功能
 

@@ -1,8 +1,10 @@
-package pdf
+package test
 
 import (
 	"bytes"
 	"testing"
+
+	"github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 // TestNewDocument tests creating a new document from PDF data
@@ -10,7 +12,7 @@ func TestNewDocument(t *testing.T) {
 	// Create a minimal valid PDF
 	pdfData := createMinimalPDF()
 
-	doc, err := NewDocument(pdfData)
+	doc, err := pdf.NewDocument(pdfData)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -34,7 +36,7 @@ func TestInvalidPDF(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewDocument(tt.data)
+			_, err := pdf.NewDocument(tt.data)
 			if err == nil {
 				t.Error("Expected error for invalid PDF data")
 			}
@@ -46,7 +48,7 @@ func TestInvalidPDF(t *testing.T) {
 func TestDocumentInfo(t *testing.T) {
 	pdfData := createMinimalPDF()
 
-	doc, err := NewDocument(pdfData)
+	doc, err := pdf.NewDocument(pdfData)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -64,7 +66,7 @@ func TestDocumentInfo(t *testing.T) {
 func TestNumPages(t *testing.T) {
 	pdfData := createMinimalPDF()
 
-	doc, err := NewDocument(pdfData)
+	doc, err := pdf.NewDocument(pdfData)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -80,7 +82,7 @@ func TestNumPages(t *testing.T) {
 func TestGetPage(t *testing.T) {
 	pdfData := createMinimalPDF()
 
-	doc, err := NewDocument(pdfData)
+	doc, err := pdf.NewDocument(pdfData)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -105,7 +107,7 @@ func TestGetPage(t *testing.T) {
 
 // TestRectangle tests rectangle operations
 func TestRectangle(t *testing.T) {
-	r := Rectangle{LLX: 0, LLY: 0, URX: 612, URY: 792}
+	r := pdf.Rectangle{LLX: 0, LLY: 0, URX: 612, URY: 792}
 
 	if r.Width() != 612 {
 		t.Errorf("Expected width 612, got %f", r.Width())
@@ -116,41 +118,11 @@ func TestRectangle(t *testing.T) {
 	}
 }
 
-// TestParsePDFDate tests PDF date parsing
-func TestParsePDFDate(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected int  // year
-		isZero   bool // whether result should be zero time
-	}{
-		{"D:20240101120000", 2024, false},
-		{"D:20231225", 2023, false},
-		{"20220615", 2022, false},
-		{"", 1, true},   // time.Time{}.Year() returns 1
-		{"D:", 1, true}, // time.Time{}.Year() returns 1
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := parsePDFDate(tt.input)
-			if tt.isZero {
-				if !result.IsZero() {
-					t.Errorf("Expected zero time for input %q", tt.input)
-				}
-			} else {
-				if result.Year() != tt.expected {
-					t.Errorf("Expected year %d, got %d", tt.expected, result.Year())
-				}
-			}
-		})
-	}
-}
-
 // TestDocumentClose tests document closing
 func TestDocumentClose(t *testing.T) {
 	pdfData := createMinimalPDF()
 
-	doc, err := NewDocument(pdfData)
+	doc, err := pdf.NewDocument(pdfData)
 	if err != nil {
 		t.Fatalf("Failed to create document: %v", err)
 	}
@@ -158,11 +130,6 @@ func TestDocumentClose(t *testing.T) {
 	err = doc.Close()
 	if err != nil {
 		t.Errorf("Close should not return error: %v", err)
-	}
-
-	// Verify internal state is cleared
-	if doc.data != nil {
-		t.Error("Document data should be nil after close")
 	}
 }
 

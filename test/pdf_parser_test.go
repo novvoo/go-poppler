@@ -1,13 +1,15 @@
-package pdf
+package test
 
 import (
 	"testing"
+
+	"github.com/novvoo/go-poppler/pkg/pdf"
 )
 
 // TestLexerReadLine tests reading lines from lexer
 func TestLexerReadLine(t *testing.T) {
 	input := []byte("line1\nline2\rline3\r\nline4")
-	lexer := NewLexerFromBytes(input)
+	lexer := pdf.NewLexerFromBytes(input)
 
 	line, err := lexer.ReadLine()
 	if err != nil {
@@ -15,40 +17,6 @@ func TestLexerReadLine(t *testing.T) {
 	}
 	if string(line) != "line1" {
 		t.Errorf("Expected 'line1', got '%s'", line)
-	}
-}
-
-// TestIsWhitespace tests whitespace detection
-func TestIsWhitespace(t *testing.T) {
-	whitespaces := []byte{' ', '\t', '\n', '\r', '\f', 0}
-	for _, ws := range whitespaces {
-		if !isWhitespace(ws) {
-			t.Errorf("Expected %d to be whitespace", ws)
-		}
-	}
-
-	nonWhitespaces := []byte{'a', '1', '/', '('}
-	for _, nws := range nonWhitespaces {
-		if isWhitespace(nws) {
-			t.Errorf("Expected %c to not be whitespace", nws)
-		}
-	}
-}
-
-// TestIsDelimiter tests delimiter detection
-func TestIsDelimiter(t *testing.T) {
-	delimiters := []byte{'(', ')', '<', '>', '[', ']', '{', '}', '/', '%'}
-	for _, d := range delimiters {
-		if !isDelimiter(d) {
-			t.Errorf("Expected %c to be delimiter", d)
-		}
-	}
-
-	nonDelimiters := []byte{'a', '1', '.', '-'}
-	for _, nd := range nonDelimiters {
-		if isDelimiter(nd) {
-			t.Errorf("Expected %c to not be delimiter", nd)
-		}
 	}
 }
 
@@ -65,13 +33,13 @@ func TestParserParseInteger(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		parser := NewParserFromBytes([]byte(tt.input))
+		parser := pdf.NewParserFromBytes([]byte(tt.input))
 		obj, err := parser.ParseObject()
 		if err != nil {
 			t.Errorf("ParseObject(%s) failed: %v", tt.input, err)
 			continue
 		}
-		if i, ok := obj.(Integer); !ok || int64(i) != tt.expected {
+		if i, ok := obj.(pdf.Integer); !ok || int64(i) != tt.expected {
 			t.Errorf("ParseObject(%s) = %v, expected %d", tt.input, obj, tt.expected)
 		}
 	}
@@ -90,13 +58,13 @@ func TestParserParseReal(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		parser := NewParserFromBytes([]byte(tt.input))
+		parser := pdf.NewParserFromBytes([]byte(tt.input))
 		obj, err := parser.ParseObject()
 		if err != nil {
 			t.Errorf("ParseObject(%s) failed: %v", tt.input, err)
 			continue
 		}
-		if r, ok := obj.(Real); !ok || float64(r) != tt.expected {
+		if r, ok := obj.(pdf.Real); !ok || float64(r) != tt.expected {
 			t.Errorf("ParseObject(%s) = %v, expected %f", tt.input, obj, tt.expected)
 		}
 	}
@@ -113,13 +81,13 @@ func TestParserParseBoolean(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		parser := NewParserFromBytes([]byte(tt.input))
+		parser := pdf.NewParserFromBytes([]byte(tt.input))
 		obj, err := parser.ParseObject()
 		if err != nil {
 			t.Errorf("ParseObject(%s) failed: %v", tt.input, err)
 			continue
 		}
-		if b, ok := obj.(Boolean); !ok || bool(b) != tt.expected {
+		if b, ok := obj.(pdf.Boolean); !ok || bool(b) != tt.expected {
 			t.Errorf("ParseObject(%s) = %v, expected %v", tt.input, obj, tt.expected)
 		}
 	}
@@ -127,12 +95,12 @@ func TestParserParseBoolean(t *testing.T) {
 
 // TestParserParseNull tests parsing null
 func TestParserParseNull(t *testing.T) {
-	parser := NewParserFromBytes([]byte("null"))
+	parser := pdf.NewParserFromBytes([]byte("null"))
 	obj, err := parser.ParseObject()
 	if err != nil {
 		t.Errorf("ParseObject(null) failed: %v", err)
 	}
-	if _, ok := obj.(Null); !ok {
+	if _, ok := obj.(pdf.Null); !ok {
 		t.Errorf("ParseObject(null) = %v, expected Null", obj)
 	}
 }
@@ -149,13 +117,13 @@ func TestParserParseName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		parser := NewParserFromBytes([]byte(tt.input))
+		parser := pdf.NewParserFromBytes([]byte(tt.input))
 		obj, err := parser.ParseObject()
 		if err != nil {
 			t.Errorf("ParseObject(%s) failed: %v", tt.input, err)
 			continue
 		}
-		if n, ok := obj.(Name); !ok || string(n) != tt.expected {
+		if n, ok := obj.(pdf.Name); !ok || string(n) != tt.expected {
 			t.Errorf("ParseObject(%s) = %v, expected %s", tt.input, obj, tt.expected)
 		}
 	}
@@ -173,13 +141,13 @@ func TestParserParseString(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		parser := NewParserFromBytes([]byte(tt.input))
+		parser := pdf.NewParserFromBytes([]byte(tt.input))
 		obj, err := parser.ParseObject()
 		if err != nil {
 			t.Errorf("ParseObject(%s) failed: %v", tt.input, err)
 			continue
 		}
-		if s, ok := obj.(String); !ok || string(s.Value) != tt.expected {
+		if s, ok := obj.(pdf.String); !ok || string(s.Value) != tt.expected {
 			t.Errorf("ParseObject(%s) = %v, expected %s", tt.input, obj, tt.expected)
 		}
 	}
@@ -196,13 +164,13 @@ func TestParserParseHexString(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		parser := NewParserFromBytes([]byte(tt.input))
+		parser := pdf.NewParserFromBytes([]byte(tt.input))
 		obj, err := parser.ParseObject()
 		if err != nil {
 			t.Errorf("ParseObject(%s) failed: %v", tt.input, err)
 			continue
 		}
-		if s, ok := obj.(String); !ok || string(s.Value) != string(tt.expected) {
+		if s, ok := obj.(pdf.String); !ok || string(s.Value) != string(tt.expected) {
 			t.Errorf("ParseObject(%s) = %v, expected %v", tt.input, obj, tt.expected)
 		}
 	}
@@ -210,13 +178,13 @@ func TestParserParseHexString(t *testing.T) {
 
 // TestParserParseArray tests parsing arrays
 func TestParserParseArray(t *testing.T) {
-	parser := NewParserFromBytes([]byte("[1 2 3]"))
+	parser := pdf.NewParserFromBytes([]byte("[1 2 3]"))
 	obj, err := parser.ParseObject()
 	if err != nil {
 		t.Errorf("ParseObject([1 2 3]) failed: %v", err)
 	}
 
-	arr, ok := obj.(Array)
+	arr, ok := obj.(pdf.Array)
 	if !ok {
 		t.Errorf("Expected Array, got %T", obj)
 	}
@@ -228,13 +196,13 @@ func TestParserParseArray(t *testing.T) {
 
 // TestParserParseDictionary tests parsing dictionaries
 func TestParserParseDictionary(t *testing.T) {
-	parser := NewParserFromBytes([]byte("<< /Type /Test /Value 42 >>"))
+	parser := pdf.NewParserFromBytes([]byte("<< /Type /Test /Value 42 >>"))
 	obj, err := parser.ParseObject()
 	if err != nil {
 		t.Errorf("ParseObject dictionary failed: %v", err)
 	}
 
-	dict, ok := obj.(Dictionary)
+	dict, ok := obj.(pdf.Dictionary)
 	if !ok {
 		t.Errorf("Expected Dictionary, got %T", obj)
 	}
@@ -252,13 +220,13 @@ func TestParserParseDictionary(t *testing.T) {
 
 // TestParserParseReference tests parsing references
 func TestParserParseReference(t *testing.T) {
-	parser := NewParserFromBytes([]byte("1 0 R"))
+	parser := pdf.NewParserFromBytes([]byte("1 0 R"))
 	obj, err := parser.ParseObject()
 	if err != nil {
 		t.Errorf("ParseObject(1 0 R) failed: %v", err)
 	}
 
-	ref, ok := obj.(Reference)
+	ref, ok := obj.(pdf.Reference)
 	if !ok {
 		t.Errorf("Expected Reference, got %T", obj)
 	}
