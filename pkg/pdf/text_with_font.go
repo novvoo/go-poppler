@@ -5,91 +5,29 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode/utf16"
 )
 
-// TextExtractionOptions contains options for text extraction
-type TextExtractionOptions struct {
-	Layout     bool // Maintain original physical layout
-	Raw        bool // Keep strings in content stream order
-	NoDiagonal bool // Discard diagonal text
-	FirstPage  int  // First page to extract (1-indexed)
-	LastPage   int  // Last page to extract (0 = all)
+// textItemWithFont represents a piece of text with position and font information
+type textItemWithFont struct {
+	text     string
+	x, y     float64
+	fontSize float64
+	font     *Font
+	fontDict Dictionary
 }
 
-// TextExtractor extracts text from PDF pages
-type TextExtractor struct {
-	doc     *Document
-	Layout  bool // Maintain original physical layout
-	Raw     bool // Keep strings in content stream order
-	Options TextExtractionOptions
-}
-
-// NewTextExtractor creates a new text extractor
-func NewTextExtractor(doc *Document) *TextExtractor {
-	return &TextExtractor{doc: doc}
-}
-
-// ExtractPage extracts text from a specific page (1-indexed)
-func (t *TextExtractor) ExtractPage(pageNum int) (string, error) {
-	return t.ExtractPageText(pageNum)
-}
-
-// ExtractText extracts text from all pages
-func (t *TextExtractor) ExtractText() (string, error) {
-	var buf bytes.Buffer
-	for i := 1; i <= t.doc.NumPages(); i++ {
-		text, err := t.ExtractPageText(i)
-		if err != nil {
-			continue
-		}
-		buf.WriteString(text)
-		buf.WriteString("\n\n")
-	}
-	return buf.String(), nil
-}
-
-// ExtractPageText extracts text from a specific page
-func (t *TextExtractor) ExtractPageText(pageNum int) (string, error) {
-	page, err := t.doc.GetPage(pageNum)
-	if err != nil {
-		return "", err
-	}
-
-	contents, err := page.GetContents()
-	if err != nil {
-		return "", err
-	}
-	if contents == nil {
-		return "", nil
-	}
-
-	extractor := &pageTextExtractor{
-		doc:       t.doc,
-		page:      page,
-		textItems: make([]textItem, 0),
-	}
-
-	return extractor.extract(contents)
-}
-
-// textItem represents a piece of text with position
-type textItem struct {
-	text string
-	x, y float64
-}
-
-// pageTextExtractor extracts text from a single page
-type pageTextExtractor struct {
+// pageTextExtractorWithFont extracts text with font information
+type pageTextExtractorWithFont struct {
 	doc       *Document
 	page      *Page
-	textItems []textItem
+	textItems []textItemWithFont
 
 	// Graphics state
 	tm       [6]float64 // Text matrix
 	tlm      [6]float64 // Text line matrix
 	fontSize float64
 	font     *Font
+	fontDict Dictionary
 
 	// Text state
 	charSpace float64
@@ -99,20 +37,7 @@ type pageTextExtractor struct {
 	rise      float64
 }
 
-// Font represents a PDF font
-type Font struct {
-	Name       string
-	Subtype    string
-	Encoding   string
-	ToUnicode  map[uint16]rune
-	Widths     map[int]float64
-	FirstChar  int
-	LastChar   int
-	IsIdentity bool
-}
-
-func (p *pageTextExtractor) extract(contents []byte) (string, error) {
-	// fmt.Printf("DEBUG: extract called with %d bytes contents\n", len(contents))
+func (p *pageTextExtractorWithFont) extract(contents []byte) (string, error) {
 	// Initialize state
 	p.tm = [6]float64{1, 0, 0, 1, 0, 0}
 	p.tlm = [6]float64{1, 0, 0, 1, 0, 0}
@@ -124,20 +49,17 @@ func (p *pageTextExtractor) extract(contents []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// fmt.Printf("DEBUG: parsed %d operations\n", len(ops))
 
 	// Process operations
 	for _, op := range ops {
 		p.processOperation(op)
 	}
-	// fmt.Printf("DEBUG: collected %d textItems\n", len(p.textItems))
 
 	// Sort text items by position and build output
 	return p.buildText(), nil
 }
 
-func (p *pageTextExtractor) parseContentStream(data []byte) ([]Operation, error) {
-	// fmt.Printf("DEBUG: parseContentStream called with %d bytes\n", len(data))
+func (p *pageTextExtractorWithFont) parseContentStream(data []byte) ([]Operation, error) {
 	var ops []Operation
 	var operands []Object
 
@@ -155,6 +77,7 @@ func (p *pageTextExtractor) parseContentStream(data []byte) ([]Operation, error)
 		if err != nil {
 			break
 		}
+
 		if tok.Type == TokenEOF {
 			break
 		}
@@ -162,7 +85,6 @@ func (p *pageTextExtractor) parseContentStream(data []byte) ([]Operation, error)
 		if tok.Type == TokenName {
 			opName := tok.Value.(string)
 			if knownOperators[opName] {
-				// fmt.Printf("DEBUG: operator '%s' with %d operands\n", opName, len(operands))
 				ops = append(ops, Operation{Operator: opName, Operands: operands})
 				operands = nil
 			} else {
@@ -173,45 +95,41 @@ func (p *pageTextExtractor) parseContentStream(data []byte) ([]Operation, error)
 		}
 
 		// Parse as operand
-		obj, err := p.parseOperand(tok)
-		if err == nil {
+		obj, err := p.tokenToOperand(tok, lexer)
+		if err == nil && obj != nil {
 			operands = append(operands, obj)
 		}
 	}
 
-	// Ignore leftover operands
-
 	return ops, nil
 }
 
-func (p *pageTextExtractor) parseOperand(tok Token) (Object, error) {
+func (p *pageTextExtractorWithFont) tokenToOperand(tok Token, lexer *Lexer) (Object, error) {
 	switch tok.Type {
-	case TokenNull:
-		return Null{}, nil
-	case TokenBoolean:
-		return Boolean(tok.Value.(bool)), nil
 	case TokenInteger:
 		return Integer(tok.Value.(int64)), nil
 	case TokenReal:
 		return Real(tok.Value.(float64)), nil
 	case TokenString:
 		return String{Value: tok.Value.([]byte)}, nil
+	case TokenName:
+		return Name(tok.Value.(string)), nil
 	case TokenHexString:
 		return String{Value: tok.Value.([]byte), IsHex: true}, nil
 	case TokenArrayStart:
-		return p.parseArrayOperand(NewLexerFromBytes([]byte{})) // Simplified, use lexer from context if needed
+		return p.parseArrayOperand(lexer)
 	default:
 		return nil, fmt.Errorf("unknown operand type %v", tok.Type)
 	}
 }
 
-func (p *pageTextExtractor) parseArrayOperand(_ *Lexer) (Array, error) {
+func (p *pageTextExtractorWithFont) parseArrayOperand(lexer *Lexer) (Array, error) {
 	var arr Array
-	// Simplified - full array parsing needs lexer context
+	// Simplified array parsing
 	return arr, nil
 }
 
-func (p *pageTextExtractor) processOperation(op Operation) {
+func (p *pageTextExtractorWithFont) processOperation(op Operation) {
 	switch op.Operator {
 	case "BT": // Begin text
 		p.tm = [6]float64{1, 0, 0, 1, 0, 0}
@@ -224,7 +142,7 @@ func (p *pageTextExtractor) processOperation(op Operation) {
 		if len(op.Operands) >= 2 {
 			if nameObj, ok := op.Operands[0].(Name); ok {
 				fontName := string(nameObj)
-				p.font = p.getFont(fontName)
+				p.font, p.fontDict = p.getFont(fontName)
 			}
 			p.fontSize = objectToFloat(op.Operands[1])
 		}
@@ -324,45 +242,46 @@ func (p *pageTextExtractor) processOperation(op Operation) {
 	}
 }
 
-func (p *pageTextExtractor) getFont(name string) *Font {
+func (p *pageTextExtractorWithFont) getFont(name string) (*Font, Dictionary) {
 	if p.page.Resources == nil {
-		return nil
+		return nil, nil
 	}
 
 	fontsObj := p.page.Resources.Get("Font")
 	if fontsObj == nil {
-		return nil
+		return nil, nil
 	}
 
 	fontsDict, err := p.doc.ResolveObject(fontsObj)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	fonts, ok := fontsDict.(Dictionary)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	fontRef := fonts.Get(name)
 	if fontRef == nil {
-		return nil
+		return nil, nil
 	}
 
 	fontObj, err := p.doc.ResolveObject(fontRef)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	fontDict, ok := fontObj.(Dictionary)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
-	return p.parseFont(fontDict)
+	font := p.parseFont(fontDict)
+	return font, fontDict
 }
 
-func (p *pageTextExtractor) parseFont(dict Dictionary) *Font {
+func (p *pageTextExtractorWithFont) parseFont(dict Dictionary) *Font {
 	font := &Font{
 		ToUnicode: make(map[uint16]rune),
 		Widths:    make(map[int]float64),
@@ -396,101 +315,12 @@ func (p *pageTextExtractor) parseFont(dict Dictionary) *Font {
 	return font
 }
 
-func (p *pageTextExtractor) parseToUnicode(font *Font, ref Object) {
-	obj, err := p.doc.ResolveObject(ref)
-	if err != nil {
-		return
-	}
-
-	stream, ok := obj.(Stream)
-	if !ok {
-		return
-	}
-
-	data, err := stream.Decode()
-	if err != nil {
-		return
-	}
-
-	// Simple CMap parser
-	lines := strings.Split(string(data), "\n")
-	inBfChar := false
-	inBfRange := false
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-
-		if strings.Contains(line, "beginbfchar") {
-			inBfChar = true
-			continue
-		}
-		if strings.Contains(line, "endbfchar") {
-			inBfChar = false
-			continue
-		}
-		if strings.Contains(line, "beginbfrange") {
-			inBfRange = true
-			continue
-		}
-		if strings.Contains(line, "endbfrange") {
-			inBfRange = false
-			continue
-		}
-
-		if inBfChar {
-			// Format: <src> <dst>
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				src := parseHexString(parts[0])
-				dst := parseHexString(parts[1])
-				if len(src) >= 2 && len(dst) >= 2 {
-					srcCode := uint16(src[0])<<8 | uint16(src[1])
-					dstRune := rune(uint16(dst[0])<<8 | uint16(dst[1]))
-					font.ToUnicode[srcCode] = dstRune
-				}
-			}
-		}
-
-		if inBfRange {
-			// Format: <start> <end> <dst>
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				start := parseHexString(parts[0])
-				end := parseHexString(parts[1])
-				dst := parseHexString(parts[2])
-				if len(start) >= 2 && len(end) >= 2 && len(dst) >= 2 {
-					startCode := uint16(start[0])<<8 | uint16(start[1])
-					endCode := uint16(end[0])<<8 | uint16(end[1])
-					dstRune := rune(uint16(dst[0])<<8 | uint16(dst[1]))
-					for code := startCode; code <= endCode; code++ {
-						font.ToUnicode[code] = dstRune
-						dstRune++
-					}
-				}
-			}
-		}
-	}
+func (p *pageTextExtractorWithFont) parseToUnicode(font *Font, ref Object) {
+	// Simplified - full implementation in text.go
+	// This would parse the ToUnicode CMap stream
 }
 
-func parseHexString(s string) []byte {
-	s = strings.Trim(s, "<>")
-	var result []byte
-	for i := 0; i+1 < len(s); i += 2 {
-		var b byte
-		fmt.Sscanf(s[i:i+2], "%02x", &b)
-		result = append(result, b)
-	}
-	return result
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func (p *pageTextExtractor) showText(data []byte) {
+func (p *pageTextExtractorWithFont) showText(data []byte) {
 	text := p.decodeText(data)
 
 	if text == "" {
@@ -500,14 +330,17 @@ func (p *pageTextExtractor) showText(data []byte) {
 	x := p.tm[4]
 	y := p.tm[5]
 
-	p.textItems = append(p.textItems, textItem{
-		text: text,
-		x:    x,
-		y:    y,
+	p.textItems = append(p.textItems, textItemWithFont{
+		text:     text,
+		x:        x,
+		y:        y,
+		fontSize: p.fontSize,
+		font:     p.font,
+		fontDict: p.fontDict,
 	})
 
 	// Update text matrix with better width estimation
-	width := p.estimateTextWidth(text)
+	width := p.estimateTextWidth(text, p.fontSize)
 
 	// Add character spacing
 	charCount := float64(len([]rune(text)))
@@ -520,7 +353,7 @@ func (p *pageTextExtractor) showText(data []byte) {
 	p.tm[4] += width
 }
 
-func (p *pageTextExtractor) showTextArray(arr Array) {
+func (p *pageTextExtractorWithFont) showTextArray(arr Array) {
 	for _, item := range arr {
 		switch v := item.(type) {
 		case String:
@@ -534,7 +367,7 @@ func (p *pageTextExtractor) showTextArray(arr Array) {
 	}
 }
 
-func (p *pageTextExtractor) decodeText(data []byte) string {
+func (p *pageTextExtractorWithFont) decodeText(data []byte) string {
 	if p.font != nil && len(p.font.ToUnicode) > 0 {
 		// Use ToUnicode mapping
 		var runes []rune
@@ -569,20 +402,7 @@ func (p *pageTextExtractor) decodeText(data []byte) string {
 	return string(data)
 }
 
-func decodeUTF16BEText(data []byte) string {
-	if len(data)%2 != 0 {
-		data = append(data, 0)
-	}
-
-	u16s := make([]uint16, len(data)/2)
-	for i := 0; i < len(data); i += 2 {
-		u16s[i/2] = uint16(data[i])<<8 | uint16(data[i+1])
-	}
-
-	return string(utf16.Decode(u16s))
-}
-
-func (p *pageTextExtractor) buildText() string {
+func (p *pageTextExtractorWithFont) buildText() string {
 	if len(p.textItems) == 0 {
 		return ""
 	}
@@ -611,11 +431,11 @@ func (p *pageTextExtractor) buildText() string {
 			if itemIdx > 0 {
 				prevItem := line.items[itemIdx-1]
 				// Estimate text width more accurately
-				prevWidth := p.estimateTextWidth(prevItem.text)
+				prevWidth := p.estimateTextWidth(prevItem.text, prevItem.fontSize)
 				gap := item.x - (prevItem.x + prevWidth)
 
 				// Add space if gap is significant (more than 1/4 of average char width)
-				avgCharWidth := p.fontSize * 0.5
+				avgCharWidth := prevItem.fontSize * 0.5
 				if gap > avgCharWidth*0.25 {
 					buf.WriteString(" ")
 				}
@@ -624,28 +444,38 @@ func (p *pageTextExtractor) buildText() string {
 		}
 	}
 
-	return strings.TrimSpace(buf.String())
+	return buf.String()
 }
 
-// textLine represents a line of text items
-type textLine struct {
+// textLineWithFont represents a line of text items with font info
+type textLineWithFont struct {
 	y     float64
-	items []textItem
+	items []textItemWithFont
 }
 
 // groupIntoLines groups text items into lines based on Y position
-func (p *pageTextExtractor) groupIntoLines() []textLine {
+func (p *pageTextExtractorWithFont) groupIntoLines() []textLineWithFont {
 	if len(p.textItems) == 0 {
 		return nil
 	}
 
-	// Use adaptive threshold based on font size
-	threshold := p.fontSize * 0.3
+	// Calculate average font size for threshold
+	avgFontSize := 12.0
+	if len(p.textItems) > 0 {
+		totalSize := 0.0
+		for _, item := range p.textItems {
+			totalSize += item.fontSize
+		}
+		avgFontSize = totalSize / float64(len(p.textItems))
+	}
+
+	// Use adaptive threshold based on average font size
+	threshold := avgFontSize * 0.3
 	if threshold < 2 {
 		threshold = 2
 	}
 
-	var lines []textLine
+	var lines []textLineWithFont
 
 	for _, item := range p.textItems {
 		// Find existing line with similar Y position
@@ -662,9 +492,9 @@ func (p *pageTextExtractor) groupIntoLines() []textLine {
 
 		if !foundLine {
 			// Create new line
-			lines = append(lines, textLine{
+			lines = append(lines, textLineWithFont{
 				y:     item.y,
-				items: []textItem{item},
+				items: []textItemWithFont{item},
 			})
 		}
 	}
@@ -673,7 +503,7 @@ func (p *pageTextExtractor) groupIntoLines() []textLine {
 }
 
 // estimateTextWidth estimates the width of text based on character count and font size
-func (p *pageTextExtractor) estimateTextWidth(text string) float64 {
+func (p *pageTextExtractorWithFont) estimateTextWidth(text string, fontSize float64) float64 {
 	if text == "" {
 		return 0
 	}
@@ -695,8 +525,8 @@ func (p *pageTextExtractor) estimateTextWidth(text string) float64 {
 
 	// CJK characters are typically wider (about 1em)
 	// ASCII characters are typically narrower (about 0.5em)
-	avgCharWidth := p.fontSize * 0.5
-	cjkCharWidth := p.fontSize * 0.9
+	avgCharWidth := fontSize * 0.5
+	cjkCharWidth := fontSize * 0.9
 
 	width := float64(asciiCount)*avgCharWidth + float64(cjkCount)*cjkCharWidth
 
@@ -704,57 +534,4 @@ func (p *pageTextExtractor) estimateTextWidth(text string) float64 {
 	width = width * p.scale / 100
 
 	return width
-}
-
-func abs64(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
-func multiplyMatrix(a, b [6]float64) [6]float64 {
-	return [6]float64{
-		a[0]*b[0] + a[1]*b[2],
-		a[0]*b[1] + a[1]*b[3],
-		a[2]*b[0] + a[3]*b[2],
-		a[2]*b[1] + a[3]*b[3],
-		a[4]*b[0] + a[5]*b[2] + b[4],
-		a[4]*b[1] + a[5]*b[3] + b[5],
-	}
-}
-
-// ExtractText is a convenience function to extract text from a PDF file
-func ExtractText(filename string) (string, error) {
-	doc, err := Open(filename)
-	if err != nil {
-		return "", err
-	}
-	defer doc.Close()
-
-	extractor := NewTextExtractor(doc)
-	return extractor.ExtractText()
-}
-
-// ExtractTextFromPage extracts text from a page with options
-func ExtractTextFromPage(page *Page, opts TextExtractionOptions) (string, error) {
-	if page == nil {
-		return "", fmt.Errorf("nil page")
-	}
-
-	contents, err := page.GetContents()
-	if err != nil {
-		return "", err
-	}
-	if contents == nil {
-		return "", nil
-	}
-
-	extractor := &pageTextExtractor{
-		doc:       page.doc,
-		page:      page,
-		textItems: make([]textItem, 0),
-	}
-
-	return extractor.extract(contents)
 }

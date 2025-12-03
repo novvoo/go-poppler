@@ -6,3 +6,12 @@
 !test.pdf
 images
 *.png
+*.svg
+docs
+test
+*/test*
+*/debug*
+!test/*.go
+!test/test.pdf
+*.bat
+*.sh

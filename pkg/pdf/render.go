@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"math"
@@ -885,6 +886,8 @@ func (r *Renderer) SaveImageWithOptions(img *RenderedImage, filename string, opt
 	switch format {
 	case "png":
 		return png.Encode(f, goImg)
+	case "jpeg", "jpg":
+		return jpeg.Encode(f, goImg, &jpeg.Options{Quality: opts.Quality})
 	case "ppm":
 		return writePPM(f, goImg)
 	default:
