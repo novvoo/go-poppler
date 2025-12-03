@@ -45,13 +45,6 @@ go run cmd/verify-font-rendering/main.go test/test.pdf
 go run cmd/compare-rendering/main.go test/test.pdf
 ```
 
-**详细文档**:
-- [FINAL_FIX_SUMMARY.md](FINAL_FIX_SUMMARY.md) - 最终修复总结 ⭐⭐⭐
-- [FONT_SCANNER_IMPLEMENTATION.md](FONT_SCANNER_IMPLEMENTATION.md) - 字体扫描系统
-- [docs/CMAP_SUPPORT.md](docs/CMAP_SUPPORT.md) - CMap 和 CJK 字符支持
-- [docs/POPPLER_DATA_SOLUTION.md](docs/POPPLER_DATA_SOLUTION.md) - poppler-data 解决方案
-- [FIX_SUMMARY.md](FIX_SUMMARY.md) - 文本排序修复
-- [FONT_RENDERING_ISSUE.md](FONT_RENDERING_ISSUE.md) - 问题诊断
 
 ## 🚀 快速开始
 
