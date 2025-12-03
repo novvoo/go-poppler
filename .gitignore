@@ -11,6 +11,10 @@ docs
 test
 */test*
 */debug*
+*/diagnose*
+*/check*
+*/compare*
+*/analyze*
 !test/*.go
 !test/test.pdf
 *.bat

@@ -3,7 +3,6 @@ package pdf
 import (
 	"image"
 	"image/color"
-	"image/draw"
 	"math"
 
 	"github.com/golang/freetype/truetype"
@@ -33,16 +32,30 @@ func (r *Renderer) RenderPageWithText(pageNum int) (*RenderedImage, error) {
 		height = 1
 	}
 
-	// Create RGBA image for better text rendering
+	// First, render the complete page (without text) as base
+	// This includes all graphics, paths, fills, etc.
+	baseImg, err := r.RenderPage(pageNum)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert base image to RGBA for text overlay
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	// Fill with white background
-	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	// Copy base image data to RGBA image
+	for y := 0; y < height && y < baseImg.Height; y++ {
+		for x := 0; x < width && x < baseImg.Width; x++ {
+			idx := (y*baseImg.Width + x) * 3
+			if idx+2 < len(baseImg.Data) {
+				r := baseImg.Data[idx]
+				g := baseImg.Data[idx+1]
+				b := baseImg.Data[idx+2]
+				img.Set(x, y, color.RGBA{r, g, b, 255})
+			}
+		}
+	}
 
-	// Render images first
-	r.renderPageImagesToRGBA(page, img, width, height)
-
-	// Render text on top
+	// Now render text on top of the base image
 	r.renderPageTextToRGBA(page, img, width, height, scaleX, scaleY)
 
 	// Convert to RGB data
@@ -161,6 +174,11 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 		cjkFont, _ = fontCache.renderer.loadFontFromFile(cjkFontInfo.Path)
 	}
 
+	// Debug: count text types
+	mixedCount := 0
+	pureCJKCount := 0
+	pureNonCJKCount := 0
+
 	for _, item := range items {
 		if item.text == "" {
 			continue
@@ -193,24 +211,40 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 		}
 
 		// Check if text contains mixed CJK and non-CJK characters
-		if containsCJK(item.text) && containsNonCJK(item.text) {
+		hasCJK := containsCJK(item.text)
+		hasNonCJK := containsNonCJK(item.text)
+
+		if hasCJK && hasNonCJK {
 			// Mixed text: render character by character with appropriate font
+			mixedCount++
 			r.renderMixedText(img, x, y, item.text, fontSize, defaultFont, cjkFont, fontCache)
-		} else if containsCJK(item.text) {
+		} else if hasCJK {
 			// Pure CJK text: use CJK font
+			pureCJKCount++
 			ttfFont := cjkFont
 			if ttfFont == nil {
 				ttfFont = defaultFont
 			}
-			fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
-		} else {
-			// Non-CJK text: use default font
-			ttfFont := defaultFont
-			if ttfFont == nil {
-				ttfFont = cjkFont // Fallback to CJK font if no default
+			if ttfFont != nil {
+				fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
 			}
-			fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
+		} else if hasNonCJK {
+			// Non-CJK text: use default font (embedded font from PDF)
+			pureNonCJKCount++
+			ttfFont := defaultFont
+			if ttfFont != nil {
+				fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
+			}
 		}
+	}
+
+	// Debug output (can be removed in production)
+	if mixedCount > 0 || pureCJKCount > 0 {
+		// Uncomment for debugging:
+		//fmt.Printf("渲染统计: 混合=%d, 纯CJK=%d, 纯非CJK=%d\n", mixedCount, pureCJKCount, pureNonCJKCount)
+		_ = mixedCount
+		_ = pureCJKCount
+		_ = pureNonCJKCount
 	}
 }
 
