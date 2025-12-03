@@ -1,0 +1,2 @@
+# CMap files directory
+# Run: go run tools/download_cmaps.go to download CMap files

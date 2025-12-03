@@ -154,6 +154,13 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 	// Render each text item
 	pageHeight := page.Height()
 
+	// Get CJK font once for reuse
+	var cjkFont *truetype.Font
+	scanner := GetGlobalFontScanner()
+	if cjkFontInfo := scanner.FindCJKFont(); cjkFontInfo != nil {
+		cjkFont, _ = fontCache.renderer.loadFontFromFile(cjkFontInfo.Path)
+	}
+
 	for _, item := range items {
 		if item.text == "" {
 			continue
@@ -174,20 +181,9 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 		}
 
 		// Get TrueType font for this text
-		var ttfFont *truetype.Font
+		var defaultFont *truetype.Font
 		if item.font != nil && item.fontDict != nil {
-			ttfFont = fontCache.GetFont(item.font, item.fontDict, r.doc)
-		}
-
-		// If font is nil or text contains CJK characters, ensure we use a CJK-capable font
-		if ttfFont == nil || containsCJK(item.text) {
-			// Try to get a CJK font
-			scanner := GetGlobalFontScanner()
-			if cjkFontInfo := scanner.FindCJKFont(); cjkFontInfo != nil {
-				if cjkFont, err := fontCache.renderer.loadFontFromFile(cjkFontInfo.Path); err == nil {
-					ttfFont = cjkFont
-				}
-			}
+			defaultFont = fontCache.GetFont(item.font, item.fontDict, r.doc)
 		}
 
 		// Calculate font size in points
@@ -196,22 +192,123 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 			fontSize = 12
 		}
 
-		// Render text with proper font
-		fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
+		// Check if text contains mixed CJK and non-CJK characters
+		if containsCJK(item.text) && containsNonCJK(item.text) {
+			// Mixed text: render character by character with appropriate font
+			r.renderMixedText(img, x, y, item.text, fontSize, defaultFont, cjkFont, fontCache)
+		} else if containsCJK(item.text) {
+			// Pure CJK text: use CJK font
+			ttfFont := cjkFont
+			if ttfFont == nil {
+				ttfFont = defaultFont
+			}
+			fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
+		} else {
+			// Non-CJK text: use default font
+			ttfFont := defaultFont
+			if ttfFont == nil {
+				ttfFont = cjkFont // Fallback to CJK font if no default
+			}
+			fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
+		}
 	}
 }
 
 // containsCJK checks if text contains CJK characters
 func containsCJK(text string) bool {
 	for _, r := range text {
-		if (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified Ideographs
-			(r >= 0x3400 && r <= 0x4DBF) || // CJK Extension A
-			(r >= 0x3040 && r <= 0x309F) || // Hiragana
-			(r >= 0x30A0 && r <= 0x30FF) { // Katakana
+		if isCJKChar(r) {
 			return true
 		}
 	}
 	return false
+}
+
+// containsNonCJK checks if text contains non-CJK characters
+func containsNonCJK(text string) bool {
+	for _, r := range text {
+		if !isCJKChar(r) && r > 32 { // Exclude whitespace
+			return true
+		}
+	}
+	return false
+}
+
+// isCJKChar checks if a rune is a CJK character
+func isCJKChar(r rune) bool {
+	return (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified Ideographs
+		(r >= 0x3400 && r <= 0x4DBF) || // CJK Extension A
+		(r >= 0x20000 && r <= 0x2A6DF) || // CJK Extension B
+		(r >= 0x2A700 && r <= 0x2B73F) || // CJK Extension C
+		(r >= 0x2B740 && r <= 0x2B81F) || // CJK Extension D
+		(r >= 0x2B820 && r <= 0x2CEAF) || // CJK Extension E
+		(r >= 0xF900 && r <= 0xFAFF) || // CJK Compatibility Ideographs
+		(r >= 0x3040 && r <= 0x309F) || // Hiragana
+		(r >= 0x30A0 && r <= 0x30FF) || // Katakana
+		(r >= 0xAC00 && r <= 0xD7AF) // Hangul Syllables
+}
+
+// renderMixedText renders text with mixed CJK and non-CJK characters
+func (r *Renderer) renderMixedText(img *image.RGBA, x, y int, text string, fontSize float64, defaultFont, cjkFont *truetype.Font, fontCache *FontCache) {
+	currentX := x
+	var currentSegment []rune
+	var currentIsCJK bool
+	var isFirst = true
+
+	// Helper function to render accumulated segment
+	renderSegment := func() {
+		if len(currentSegment) == 0 {
+			return
+		}
+
+		segmentText := string(currentSegment)
+		var font *truetype.Font
+		if currentIsCJK {
+			font = cjkFont
+		} else {
+			font = defaultFont
+		}
+
+		if font == nil {
+			font = cjkFont // Fallback
+			if font == nil {
+				font = defaultFont
+			}
+		}
+
+		// Render the segment
+		fontCache.RenderText(img, currentX, y, segmentText, fontSize, font, color.Black)
+
+		// Advance X position
+		width := fontCache.renderer.MeasureText(segmentText, fontSize, font)
+		currentX += width
+
+		// Clear segment
+		currentSegment = nil
+	}
+
+	// Process each character
+	for _, char := range text {
+		charIsCJK := isCJKChar(char)
+
+		// If this is the first character, set the mode
+		if isFirst {
+			currentIsCJK = charIsCJK
+			isFirst = false
+		}
+
+		// If character type changed, render accumulated segment
+		if charIsCJK != currentIsCJK {
+			renderSegment()
+			currentIsCJK = charIsCJK
+		}
+
+		// Add character to current segment
+		currentSegment = append(currentSegment, char)
+	}
+
+	// Render remaining segment
+	renderSegment()
 }
 
 // drawImageToRGBA draws image data to RGBA image

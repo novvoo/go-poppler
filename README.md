@@ -48,6 +48,8 @@ go run cmd/compare-rendering/main.go test/test.pdf
 **详细文档**:
 - [FINAL_FIX_SUMMARY.md](FINAL_FIX_SUMMARY.md) - 最终修复总结 ⭐⭐⭐
 - [FONT_SCANNER_IMPLEMENTATION.md](FONT_SCANNER_IMPLEMENTATION.md) - 字体扫描系统
+- [docs/CMAP_SUPPORT.md](docs/CMAP_SUPPORT.md) - CMap 和 CJK 字符支持
+- [docs/POPPLER_DATA_SOLUTION.md](docs/POPPLER_DATA_SOLUTION.md) - poppler-data 解决方案
 - [FIX_SUMMARY.md](FIX_SUMMARY.md) - 文本排序修复
 - [FONT_RENDERING_ISSUE.md](FONT_RENDERING_ISSUE.md) - 问题诊断
 
@@ -77,6 +79,8 @@ go build ./...
 - **多种流解码**：FlateDecode、LZWDecode、ASCII85Decode、ASCIIHexDecode、RunLengthDecode、DCTDecode、JBIG2Decode、JPXDecode (JPEG2000)
 - **加密支持**：RC4 和 AES 加密/解密
 - **文本提取**：支持多种字符编码和 CMap
+- **CJK 字符支持**：内置 CID 到 Unicode 映射，无需 poppler-data ⭐
+- **智能字体系统**：自动扫描和匹配系统字体（350+ 字体）
 - **图像提取**：支持 JPEG、PNG、JBIG2 等格式
 - **页面渲染**：渲染为 PPM、PNG、JPEG 格式
 - **表单处理**：读取和填写 PDF 表单

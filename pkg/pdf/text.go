@@ -393,6 +393,19 @@ func (p *pageTextExtractor) parseFont(dict Dictionary) *Font {
 		font.IsIdentity = true
 	}
 
+	// If no ToUnicode mapping and it's a CID font, try to get CID system info
+	if len(font.ToUnicode) == 0 && font.Subtype == "Type0" {
+		_, ordering, _ := GetCIDSystemInfo(dict, p.doc)
+		if ordering != "" {
+			// Build ToUnicode mapping from CID system info
+			mapper := NewCIDToUnicodeMapper(ordering)
+			// Pre-populate common CID range
+			for cid := uint16(0); cid < 65535; cid++ {
+				font.ToUnicode[cid] = mapper.MapCID(cid)
+			}
+		}
+	}
+
 	return font
 }
 
