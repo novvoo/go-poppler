@@ -877,7 +877,6 @@ func (r *PopplerCairoRenderer) RenderPageText(img *image.RGBA) error {
 
 		case "ET": // 结束文本对象
 			r.EndString(gs, img)
-			textDev.EndWord()
 
 		case "Tf": // 设置字体
 			if len(op.Operands) >= 2 {

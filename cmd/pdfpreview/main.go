@@ -168,20 +168,25 @@ func main() {
 		}
 	}
 
-	// 提取第一页文本预览
+	// 提取第一页文本预览（使用高级 API）
 	if !*noText {
 		fmt.Printf("\n=== 文本预览（第1页）===\n")
 
-		extractor := pdf.NewTextExtractor(doc)
-		text, err := extractor.ExtractPageText(1)
+		page, err := doc.GetPage(1)
 		if err != nil {
 			fmt.Printf("错误: %v\n", err)
 		} else {
-			// 显示前 500 个字符
-			if len(text) > 500 {
-				fmt.Printf("%s...\n", text[:500])
+			// 使用布局模式提取文本
+			text, err := pdf.ExtractPageTextWithLayout(page)
+			if err != nil {
+				fmt.Printf("错误: %v\n", err)
 			} else {
-				fmt.Printf("%s\n", text)
+				// 显示前 500 个字符
+				if len(text) > 500 {
+					fmt.Printf("%s...\n", text[:500])
+				} else {
+					fmt.Printf("%s\n", text)
+				}
 			}
 		}
 	}

@@ -99,8 +99,55 @@ func main() {
 		ext = ".png"
 	}
 
-	// Handle vector formats (SVG, PS, EPS)
-	if format == "svg" || format == "ps" || format == "eps" {
+	// Handle vector formats (SVG, PS, EPS) - 使用高质量矢量导出器
+	if format == "eps" {
+		// 使用高质量 EPS 导出器（专业印刷）
+		profile := pdf.DefaultPrintProfile()
+		profile.ColorSpace = "CMYK"
+		profile.Resolution = int(*resolution)
+
+		exporter := pdf.NewHighQualityVectorExporter(doc, profile)
+
+		first := *firstPage
+		last := *lastPage
+		if first < 1 {
+			first = 1
+		}
+		if last == 0 || last > doc.NumPages() {
+			last = doc.NumPages()
+		}
+
+		for pageNum := first; pageNum <= last; pageNum++ {
+			epsData, err := exporter.ExportToEPS(pageNum)
+			if err != nil {
+				if !*quiet {
+					fmt.Fprintf(os.Stderr, "Error exporting page %d: %v\n", pageNum, err)
+				}
+				continue
+			}
+
+			var outPath string
+			if last == first {
+				outPath = outputFile + ext
+			} else {
+				outPath = fmt.Sprintf("%s-%d%s", outputFile, pageNum, ext)
+			}
+
+			err = os.WriteFile(outPath, epsData, 0644)
+			if err != nil {
+				if !*quiet {
+					fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", outPath, err)
+				}
+				continue
+			}
+
+			if !*quiet {
+				fmt.Printf("Wrote %s (High-Quality EPS)\n", outPath)
+			}
+		}
+		return
+	} else if format == "svg" || format == "ps" {
+		// 使用标准 Cairo 渲染器
 		cairoOpts := pdf.CairoOptions{
 			FirstPage:   *firstPage,
 			LastPage:    *lastPage,

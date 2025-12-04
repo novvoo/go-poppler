@@ -221,6 +221,27 @@ func main() {
 			}
 		}
 	}
+
+	// Print layer information (OCG)
+	layerMgr := pdf.NewLayerManager(doc)
+	layers := layerMgr.GetLayers()
+	if len(layers) > 0 {
+		fmt.Printf("\nOptional Content Groups (Layers): %d\n", len(layers))
+		for i, layer := range layers {
+			visible := "visible"
+			if !layer.Visible {
+				visible = "hidden"
+			}
+			locked := ""
+			if layer.Locked {
+				locked = " [locked]"
+			}
+			fmt.Printf("  %d. %s (%s)%s\n", i+1, layer.Name, visible, locked)
+			if layer.Intent != "" {
+				fmt.Printf("     Intent: %s\n", layer.Intent)
+			}
+		}
+	}
 }
 
 func formatDate(t time.Time) string {

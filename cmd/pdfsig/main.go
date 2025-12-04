@@ -52,25 +52,77 @@ func main() {
 	}
 	defer doc.Close()
 
-	// Get signatures
-	sigs := pdf.GetSignatures(doc)
+	// Create signature validator with advanced features
+	validator := pdf.NewSignatureValidator(doc)
 
-	if len(sigs) == 0 {
+	// Verify all signatures
+	results := validator.VerifyAllSignatures()
+
+	if len(results) == 0 {
 		fmt.Println("File is not signed.")
 		return
 	}
 
-	fmt.Printf("Digital Signatures: %d\n", len(sigs))
-	for i, sig := range sigs {
+	fmt.Printf("Digital Signatures: %d\n", len(results))
+	for i, result := range results {
 		fmt.Printf("\nSignature #%d:\n", i+1)
-		fmt.Printf("  - Signer: %s\n", sig.Signer)
-		fmt.Printf("  - Signing Time: %s\n", sig.SigningTime)
-		fmt.Printf("  - Reason: %s\n", sig.Reason)
-		fmt.Printf("  - Location: %s\n", sig.Location)
-		fmt.Printf("  - Contact Info: %s\n", sig.ContactInfo)
+		fmt.Printf("  - Signer: %s\n", result.SignerName)
+
+		// Validation status
+		if result.Valid {
+			fmt.Printf("  - Status: Valid ✓\n")
+		} else {
+			fmt.Printf("  - Status: Invalid ✗\n")
+		}
+
+		// Signing time
+		if !result.SigningTime.IsZero() {
+			fmt.Printf("  - Signing Time: %s\n", result.SigningTime.Format("2006-01-02 15:04:05"))
+		}
+
+		// Additional info
+		if result.Reason != "" {
+			fmt.Printf("  - Reason: %s\n", result.Reason)
+		}
+		if result.Location != "" {
+			fmt.Printf("  - Location: %s\n", result.Location)
+		}
+
+		// Signature type and algorithm
 		if *dump {
-			fmt.Printf("  - Filter: %s\n", sig.Filter)
-			fmt.Printf("  - SubFilter: %s\n", sig.SubFilter)
+			fmt.Printf("  - Signature Type: %s\n", result.SignatureType)
+			fmt.Printf("  - Hash Algorithm: %s\n", result.HashAlgorithm)
+			fmt.Printf("  - Coverage Status: %s\n", result.CoverageStatus)
+
+			// Certificate info
+			if result.Certificate != nil {
+				fmt.Printf("  - Certificate Subject: %s\n", result.Certificate.Subject)
+				fmt.Printf("  - Certificate Issuer: %s\n", result.Certificate.Issuer)
+				fmt.Printf("  - Certificate Valid From: %s\n", result.Certificate.NotBefore.Format("2006-01-02"))
+				fmt.Printf("  - Certificate Valid To: %s\n", result.Certificate.NotAfter.Format("2006-01-02"))
+			}
+
+			// Validation errors
+			if len(result.ValidationErrors) > 0 {
+				fmt.Printf("  - Validation Errors:\n")
+				for _, err := range result.ValidationErrors {
+					fmt.Printf("    * %s\n", err)
+				}
+			}
+		}
+	}
+
+	// Check document integrity
+	if !*nocert {
+		fmt.Println("\n=== Document Integrity Check ===")
+		intact, issues := validator.VerifyDocumentIntegrity()
+		if intact {
+			fmt.Println("Document integrity: OK ✓")
+		} else {
+			fmt.Println("Document integrity: Issues found ✗")
+			for _, issue := range issues {
+				fmt.Printf("  - %s\n", issue)
+			}
 		}
 	}
 

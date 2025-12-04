@@ -1419,6 +1419,8 @@ func (p *pageTextExtractorWithFont) showText(data []byte) {
 		colorR:     p.fillColorR,
 		colorG:     p.fillColorG,
 		colorB:     p.fillColorB,
+		underlined: false,
+		invisible:  false,
 	})
 
 	// Update character position
@@ -2636,6 +2638,9 @@ func (dev *PopplerTextOutputDev) BeginWord(state *TextGraphicsState, x, y float6
 		colorR: dev.fillColorR,
 		colorG: dev.fillColorG,
 		colorB: dev.fillColorB,
+		// 默认状态标志
+		underlined: false,
+		invisible:  false,
 	}
 
 	if dev.curFont != nil {
@@ -3486,6 +3491,7 @@ func (atl *AdvancedTextLayout) groupIntoWords() []*TextWord {
 				edgeEnd:    item.x + estimatedWidth,
 				underlined: item.underlined,
 				invisible:  item.invisible,
+				wMode:      0, // 默认水平书写模式
 			}
 		} else {
 			// Check if should merge with current word
@@ -3515,6 +3521,7 @@ func (atl *AdvancedTextLayout) groupIntoWords() []*TextWord {
 					edgeEnd:    item.x + estimatedWidth,
 					underlined: item.underlined,
 					invisible:  item.invisible,
+					wMode:      0, // 默认水平书写模式
 				}
 			} else {
 				// Merge with current word
@@ -3649,12 +3656,17 @@ func (atl *AdvancedTextLayout) groupLinesIntoBlocks(lines []*TextLine) []*Advanc
 		if !foundBlock {
 			// Create new block
 			block := &AdvancedTextBlock{
-				xMin:   line.xMin,
-				xMax:   line.xMax,
-				yMin:   line.yMin,
-				yMax:   line.yMax,
-				lines:  []*TextLine{line},
-				nLines: 1,
+				xMin:      line.xMin,
+				xMax:      line.xMax,
+				yMin:      line.yMin,
+				yMax:      line.yMax,
+				lines:     []*TextLine{line},
+				nLines:    1,
+				tableId:   -1,    // -1 表示不属于任何表格
+				tableEnd:  false, // 默认不是表格末尾
+				pool:      nil,   // 初始化为 nil，在需要时创建
+				next:      nil,   // 链表指针初始化为 nil
+				stackNext: nil,   // 栈指针初始化为 nil
 			}
 			blocks = append(blocks, block)
 		}
@@ -4773,60 +4785,596 @@ func (b *TextLineBuilder) Build() *TextLine {
 }
 
 // ============================================================================
-// 使用示例和测试辅助函数
+// PopplerTextOutputDev 高级搜索功能 - 使用 flows、blocks、searchString 字段
 // ============================================================================
 
-// ExampleTextLineUsage 展示如何使用 TextLine 的所有字段
-func ExampleTextLineUsage() {
-	// 创建一个 TextLine
-	builder := NewTextLineBuilder(0)
+// SearchResult 表示搜索结果
+type SearchResult struct {
+	Text      string  // 匹配的文本
+	PageNum   int     // 页码
+	XMin      float64 // 边界框
+	YMin      float64
+	XMax      float64
+	YMax      float64
+	BlockIdx  int    // 所在块的索引
+	FlowIdx   int    // 所在流的索引
+	LineIdx   int    // 所在行的索引
+	CharStart int    // 字符起始位置
+	CharEnd   int    // 字符结束位置
+	Context   string // 上下文（前后文本）
+}
 
-	// 创建一些测试单词
-	word1 := &TextWord{
-		text:       "Hello",
-		xMin:       10,
-		xMax:       50,
-		yMin:       100,
-		yMax:       120,
-		base:       110,
-		spaceAfter: true,
-		edgeEnd:    50,
+// SetSearchString 设置搜索字符串（使用 searchString 和 searchLen 字段）
+func (dev *PopplerTextOutputDev) SetSearchString(search string) {
+	dev.searchString = []rune(strings.ToLower(search))
+	dev.searchLen = len(dev.searchString)
+}
+
+// SearchInPage 在页面中搜索文本（使用 flows 和 blocks 字段）
+// 参考 Poppler 的 TextPage::findText 实现
+func (dev *PopplerTextOutputDev) SearchInPage(searchText string, caseSensitive bool) []SearchResult {
+	var results []SearchResult
+
+	// 设置搜索字符串
+	if !caseSensitive {
+		dev.SetSearchString(searchText)
+	} else {
+		dev.searchString = []rune(searchText)
+		dev.searchLen = len(dev.searchString)
 	}
 
-	word2 := &TextWord{
-		text:       "World",
-		xMin:       55,
-		xMax:       95,
-		yMin:       100,
-		yMax:       120,
-		base:       110,
-		spaceAfter: false,
-		edgeEnd:    95,
+	if dev.searchLen == 0 {
+		return results
 	}
 
-	// 添加单词
-	builder.AddWord(word1)
-	builder.AddWord(word2)
-
-	// 构建行
-	line := builder.Build()
-
-	// 使用各个字段
-	fmt.Printf("Line text: %s\n", line.BuildLineText())
-	fmt.Printf("Line length: %d\n", line.len)
-	fmt.Printf("Converted length: %d\n", line.GetConvertedLength())
-	fmt.Printf("Normalized text: %s\n", line.GetNormalizedText())
-	fmt.Printf("ASCII translation: %s\n", line.GetASCIITranslation())
-	fmt.Printf("Is hyphenated: %v\n", line.IsHyphenated())
-
-	// 获取字符信息
-	for i := 0; i < line.len; i++ {
-		edge := line.GetCharEdge(i)
-		col := line.GetCharColumn(i)
-		fmt.Printf("Char %d: '%c' edge=%.2f col=%d\n", i, line.text[i], edge, col)
+	// 确保已经合并文本（coalesce）
+	if dev.flows == nil && len(dev.blocks) == 0 {
+		dev.Coalesce()
 	}
 
-	// 搜索文本
-	matches := line.FindInLine("hello", false)
-	fmt.Printf("Found %d matches for 'hello'\n", len(matches))
+	// 在每个 flow 中搜索
+	if dev.flows != nil {
+		results = dev.searchInFlows(caseSensitive)
+	} else if len(dev.blocks) > 0 {
+		// 如果没有 flows，直接在 blocks 中搜索
+		results = dev.searchInBlocks(caseSensitive)
+	}
+
+	return results
+}
+
+// searchInFlows 在文本流中搜索（使用 flows 字段）
+func (dev *PopplerTextOutputDev) searchInFlows(caseSensitive bool) []SearchResult {
+	var results []SearchResult
+
+	flowIdx := 0
+	for flow := dev.flows; flow != nil; flow = flow.next {
+		// 在每个 block 中搜索
+		for blockIdx, block := range flow.blocks {
+			blockResults := dev.searchInBlock(block, flowIdx, blockIdx, caseSensitive)
+			results = append(results, blockResults...)
+		}
+		flowIdx++
+	}
+
+	return results
+}
+
+// searchInBlocks 在文本块数组中搜索（使用 blocks 字段）
+func (dev *PopplerTextOutputDev) searchInBlocks(caseSensitive bool) []SearchResult {
+	var results []SearchResult
+
+	for blockIdx := 0; blockIdx < dev.nBlocks && blockIdx < len(dev.blocks); blockIdx++ {
+		block := dev.blocks[blockIdx]
+		blockResults := dev.searchInBlock(block, -1, blockIdx, caseSensitive)
+		results = append(results, blockResults...)
+	}
+
+	return results
+}
+
+// searchInBlock 在单个文本块中搜索
+func (dev *PopplerTextOutputDev) searchInBlock(block *AdvancedTextBlock, flowIdx, blockIdx int, caseSensitive bool) []SearchResult {
+	var results []SearchResult
+
+	if block == nil {
+		return results
+	}
+
+	// 在每一行中搜索
+	for lineIdx, line := range block.lines {
+		lineResults := dev.searchInLine(line, flowIdx, blockIdx, lineIdx, caseSensitive)
+		results = append(results, lineResults...)
+	}
+
+	return results
+}
+
+// searchInLine 在单行中搜索
+func (dev *PopplerTextOutputDev) searchInLine(line *TextLine, flowIdx, blockIdx, lineIdx int, caseSensitive bool) []SearchResult {
+	var results []SearchResult
+
+	if line == nil || line.len == 0 {
+		return results
+	}
+
+	// 使用规范化文本进行搜索
+	var searchIn []rune
+	if caseSensitive {
+		searchIn = line.text[:line.len]
+	} else {
+		if line.normalizedLen == 0 {
+			line.NormalizeText()
+		}
+		searchIn = line.normalized[:line.normalizedLen]
+	}
+
+	// 搜索匹配
+	for i := 0; i <= len(searchIn)-dev.searchLen; i++ {
+		match := true
+		for j := 0; j < dev.searchLen; j++ {
+			if searchIn[i+j] != dev.searchString[j] {
+				match = false
+				break
+			}
+		}
+
+		if match {
+			// 找到匹配，创建搜索结果
+			var charStart, charEnd int
+			if caseSensitive {
+				charStart = i
+				charEnd = i + dev.searchLen
+			} else {
+				// 映射回原始文本索引
+				charStart = line.normalizedIdx[i]
+				charEnd = line.normalizedIdx[i+dev.searchLen-1] + 1
+			}
+
+			// 获取匹配文本的边界框
+			xMin, xMax, yMin, yMax := dev.getTextBounds(line, charStart, charEnd)
+
+			// 获取上下文（前后各 20 个字符）
+			context := dev.getContext(line, charStart, charEnd, 20)
+
+			result := SearchResult{
+				Text:      string(line.text[charStart:charEnd]),
+				PageNum:   dev.page.Number,
+				XMin:      xMin,
+				YMin:      yMin,
+				XMax:      xMax,
+				YMax:      yMax,
+				BlockIdx:  blockIdx,
+				FlowIdx:   flowIdx,
+				LineIdx:   lineIdx,
+				CharStart: charStart,
+				CharEnd:   charEnd,
+				Context:   context,
+			}
+
+			results = append(results, result)
+		}
+	}
+
+	return results
+}
+
+// getTextBounds 获取文本片段的边界框
+func (dev *PopplerTextOutputDev) getTextBounds(line *TextLine, start, end int) (xMin, xMax, yMin, yMax float64) {
+	if start < 0 || end > line.len || start >= end {
+		return 0, 0, 0, 0
+	}
+
+	// 使用 edge 数组获取精确边界
+	xMin = line.GetCharEdge(start)
+	if end < len(line.edge) {
+		xMax = line.GetCharEdge(end)
+	} else {
+		xMax = line.xMax
+	}
+
+	yMin = line.yMin
+	yMax = line.yMax
+
+	return xMin, xMax, yMin, yMax
+}
+
+// getContext 获取匹配文本的上下文
+func (dev *PopplerTextOutputDev) getContext(line *TextLine, start, end, contextLen int) string {
+	contextStart := start - contextLen
+	if contextStart < 0 {
+		contextStart = 0
+	}
+
+	contextEnd := end + contextLen
+	if contextEnd > line.len {
+		contextEnd = line.len
+	}
+
+	return string(line.text[contextStart:contextEnd])
+}
+
+// Coalesce 合并文本为 flows 和 blocks（使用 flows 和 blocks 字段）
+// 参考 Poppler 的 TextPage::coalesce 实现
+func (dev *PopplerTextOutputDev) Coalesce() error {
+	// 如果已经合并过，直接返回
+	if dev.flows != nil || len(dev.blocks) > 0 {
+		return nil
+	}
+
+	// 从原始单词列表构建文本项
+	var items []textItem
+	for word := dev.rawWords; word != nil; word = word.next {
+		if len(word.chars) == 0 {
+			continue
+		}
+
+		// 构建单词文本
+		var text strings.Builder
+		for _, char := range word.chars {
+			text.WriteRune(char.unicode)
+		}
+
+		item := textItem{
+			text:     text.String(),
+			x:        word.xMin,
+			y:        word.yMin,
+			fontSize: word.fontSize,
+			colorR:   word.colorR,
+			colorG:   word.colorG,
+			colorB:   word.colorB,
+		}
+		items = append(items, item)
+	}
+
+	// 使用高级布局算法
+	layout := NewAdvancedTextLayout(dev.pageWidth, dev.pageHeight, items)
+	if err := layout.Coalesce(); err != nil {
+		return err
+	}
+
+	// 保存结果到 dev 的字段
+	dev.blocks = layout.GetBlocks()
+	dev.nBlocks = len(dev.blocks)
+	dev.flows = layout.GetFlows()[0] // 获取第一个 flow（链表头）
+
+	return nil
+}
+
+// GetFlows 获取文本流（使用 flows 字段）
+func (dev *PopplerTextOutputDev) GetFlows() *TextFlow {
+	if dev.flows == nil {
+		dev.Coalesce()
+	}
+	return dev.flows
+}
+
+// GetBlocks 获取文本块数组（使用 blocks 字段）
+func (dev *PopplerTextOutputDev) GetBlocks() []*AdvancedTextBlock {
+	if len(dev.blocks) == 0 {
+		dev.Coalesce()
+	}
+	return dev.blocks
+}
+
+// GetBlockCount 获取文本块数量（使用 nBlocks 字段）
+func (dev *PopplerTextOutputDev) GetBlockCount() int {
+	if dev.nBlocks == 0 && len(dev.blocks) == 0 {
+		dev.Coalesce()
+	}
+	return dev.nBlocks
+}
+
+// ============================================================================
+// 高级文本分析功能 - 使用 flows 和 blocks
+// ============================================================================
+
+// TextStatistics 文本统计信息
+type TextStatistics struct {
+	TotalChars       int     // 总字符数
+	TotalWords       int     // 总单词数
+	TotalLines       int     // 总行数
+	TotalBlocks      int     // 总块数
+	TotalFlows       int     // 总流数
+	AvgCharsPerLine  float64 // 平均每行字符数
+	AvgWordsPerLine  float64 // 平均每行单词数
+	AvgLinesPerBlock float64 // 平均每块行数
+	CJKCharCount     int     // CJK 字符数
+	ASCIICharCount   int     // ASCII 字符数
+}
+
+// GetStatistics 获取文本统计信息（使用 flows 和 blocks 字段）
+func (dev *PopplerTextOutputDev) GetStatistics() TextStatistics {
+	stats := TextStatistics{}
+
+	// 确保已经合并
+	if dev.flows == nil && len(dev.blocks) == 0 {
+		dev.Coalesce()
+	}
+
+	// 统计 flows
+	flowCount := 0
+	for flow := dev.flows; flow != nil; flow = flow.next {
+		flowCount++
+	}
+	stats.TotalFlows = flowCount
+
+	// 统计 blocks
+	stats.TotalBlocks = dev.nBlocks
+
+	// 遍历所有 blocks 统计详细信息
+	for _, block := range dev.blocks {
+		if block == nil {
+			continue
+		}
+
+		stats.TotalLines += len(block.lines)
+
+		for _, line := range block.lines {
+			if line == nil {
+				continue
+			}
+
+			stats.TotalChars += line.len
+			stats.TotalWords += len(line.words)
+
+			// 统计 CJK 和 ASCII 字符
+			for i := 0; i < line.len; i++ {
+				char := line.text[i]
+				if char >= 0x4E00 && char <= 0x9FFF {
+					stats.CJKCharCount++
+				} else if char < 128 {
+					stats.ASCIICharCount++
+				}
+			}
+		}
+	}
+
+	// 计算平均值
+	if stats.TotalLines > 0 {
+		stats.AvgCharsPerLine = float64(stats.TotalChars) / float64(stats.TotalLines)
+		stats.AvgWordsPerLine = float64(stats.TotalWords) / float64(stats.TotalLines)
+	}
+
+	if stats.TotalBlocks > 0 {
+		stats.AvgLinesPerBlock = float64(stats.TotalLines) / float64(stats.TotalBlocks)
+	}
+
+	return stats
+}
+
+// ExtractStructuredText 提取结构化文本（使用 flows 和 blocks 字段）
+// 返回按流和块组织的文本
+func (dev *PopplerTextOutputDev) ExtractStructuredText() map[string]interface{} {
+	// 确保已经合并
+	if dev.flows == nil && len(dev.blocks) == 0 {
+		dev.Coalesce()
+	}
+
+	result := make(map[string]interface{})
+	flows := make([]map[string]interface{}, 0)
+
+	flowIdx := 0
+	for flow := dev.flows; flow != nil; flow = flow.next {
+		flowData := map[string]interface{}{
+			"index": flowIdx,
+			"bounds": map[string]float64{
+				"xMin": flow.xMin,
+				"yMin": flow.yMin,
+				"xMax": flow.xMax,
+				"yMax": flow.yMax,
+			},
+			"blocks": make([]map[string]interface{}, 0),
+		}
+
+		for _, block := range flow.blocks {
+			blockData := map[string]interface{}{
+				"bounds": map[string]float64{
+					"xMin": block.xMin,
+					"yMin": block.yMin,
+					"xMax": block.xMax,
+					"yMax": block.yMax,
+				},
+				"rotation":  block.rot,
+				"lineCount": block.nLines,
+				"charCount": block.charCount,
+				"lines":     make([]map[string]interface{}, 0),
+			}
+
+			for _, line := range block.lines {
+				lineData := map[string]interface{}{
+					"text": line.BuildLineText(),
+					"bounds": map[string]float64{
+						"xMin": line.xMin,
+						"yMin": line.yMin,
+						"xMax": line.xMax,
+						"yMax": line.yMax,
+					},
+					"baseline":   line.base,
+					"hyphenated": line.hyphenated,
+					"wordCount":  len(line.words),
+				}
+
+				blockData["lines"] = append(blockData["lines"].([]map[string]interface{}), lineData)
+			}
+
+			flowData["blocks"] = append(flowData["blocks"].([]map[string]interface{}), blockData)
+		}
+
+		flows = append(flows, flowData)
+		flowIdx++
+	}
+
+	result["flows"] = flows
+	result["flowCount"] = flowIdx
+	result["blockCount"] = dev.nBlocks
+
+	return result
+}
+
+func SearchTextInPage(page *Page, searchText string, caseSensitive bool) ([]SearchResult, error) {
+	if page == nil {
+		return nil, fmt.Errorf("nil page")
+	}
+
+	contents, err := page.GetContents()
+	if err != nil {
+		return nil, err
+	}
+	if contents == nil {
+		return nil, nil
+	}
+
+	// 创建 Poppler 风格的文本输出设备
+	dev := NewPopplerTextOutputDev(page.doc, page)
+
+	// 提取文本（这会填充 rawWords）
+	extractor := &pageTextExtractor{
+		doc:       page.doc,
+		page:      page,
+		textItems: make([]textItem, 0),
+	}
+	extractor.extract(contents)
+
+	// 将 textItems 转换为 PopplerTextWord
+	for _, item := range extractor.textItems {
+		word := &PopplerTextWord{
+			fontSize:   item.fontSize,
+			colorR:     item.colorR,
+			colorG:     item.colorG,
+			colorB:     item.colorB,
+			chars:      make([]PopplerCharInfo, 0),
+			underlined: item.underlined,
+			invisible:  item.invisible,
+			xMin:       item.x,
+			yMin:       item.y,
+			xMax:       item.x + item.fontSize*float64(len(item.text))*0.5,
+			yMax:       item.y + item.fontSize,
+		}
+
+		// 创建字符
+		for _, r := range item.text {
+			char := PopplerCharInfo{
+				unicode:  r,
+				charCode: uint16(r),
+			}
+			word.chars = append(word.chars, char)
+		}
+
+		dev.AddWord(word)
+	}
+
+	// 执行搜索
+	results := dev.SearchInPage(searchText, caseSensitive)
+
+	return results, nil
+}
+
+func GetPageStatistics(page *Page) (TextStatistics, error) {
+	if page == nil {
+		return TextStatistics{}, fmt.Errorf("nil page")
+	}
+
+	contents, err := page.GetContents()
+	if err != nil {
+		return TextStatistics{}, err
+	}
+	if contents == nil {
+		return TextStatistics{}, nil
+	}
+
+	// 创建 Poppler 风格的文本输出设备
+	dev := NewPopplerTextOutputDev(page.doc, page)
+
+	// 提取文本
+	extractor := &pageTextExtractor{
+		doc:       page.doc,
+		page:      page,
+		textItems: make([]textItem, 0),
+	}
+	extractor.extract(contents)
+
+	// 转换为 PopplerTextWord
+	for _, item := range extractor.textItems {
+		word := &PopplerTextWord{
+			fontSize: item.fontSize,
+			colorR:   item.colorR,
+			colorG:   item.colorG,
+			colorB:   item.colorB,
+			chars:    make([]PopplerCharInfo, 0),
+			xMin:     item.x,
+			yMin:     item.y,
+			xMax:     item.x + item.fontSize*float64(len(item.text))*0.5,
+			yMax:     item.y + item.fontSize,
+		}
+
+		for _, r := range item.text {
+			char := PopplerCharInfo{
+				unicode:  r,
+				charCode: uint16(r),
+			}
+			word.chars = append(word.chars, char)
+		}
+
+		dev.AddWord(word)
+	}
+
+	// 获取统计信息
+	stats := dev.GetStatistics()
+
+	return stats, nil
+}
+func ExtractStructuredTextFromPage(page *Page) (map[string]interface{}, error) {
+	if page == nil {
+		return nil, fmt.Errorf("nil page")
+	}
+
+	contents, err := page.GetContents()
+	if err != nil {
+		return nil, err
+	}
+	if contents == nil {
+		return make(map[string]interface{}), nil
+	}
+
+	// 创建 Poppler 风格的文本输出设备
+	dev := NewPopplerTextOutputDev(page.doc, page)
+
+	// 提取文本
+	extractor := &pageTextExtractor{
+		doc:       page.doc,
+		page:      page,
+		textItems: make([]textItem, 0),
+	}
+	extractor.extract(contents)
+
+	// 转换为 PopplerTextWord
+	for _, item := range extractor.textItems {
+		word := &PopplerTextWord{
+			fontSize: item.fontSize,
+			colorR:   item.colorR,
+			colorG:   item.colorG,
+			colorB:   item.colorB,
+			chars:    make([]PopplerCharInfo, 0),
+			xMin:     item.x,
+			yMin:     item.y,
+			xMax:     item.x + item.fontSize*float64(len(item.text))*0.5,
+			yMax:     item.y + item.fontSize,
+		}
+
+		for _, r := range item.text {
+			char := PopplerCharInfo{
+				unicode:  r,
+				charCode: uint16(r),
+			}
+			word.chars = append(word.chars, char)
+		}
+
+		dev.AddWord(word)
+	}
+
+	// 提取结构化文本
+	structured := dev.ExtractStructuredText()
+
+	return structured, nil
 }
