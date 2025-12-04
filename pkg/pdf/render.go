@@ -715,6 +715,12 @@ func (r *Renderer) SetResolution(dpiX, dpiY float64) {
 
 // RenderPage renders a page to an image
 func (r *Renderer) RenderPage(pageNum int) (*RenderedImage, error) {
+	// Use the complete rendering method that includes text
+	return r.RenderPageWithText(pageNum)
+}
+
+// renderPageBase renders a page without text (for internal use)
+func (r *Renderer) renderPageBase(pageNum int) (*RenderedImage, error) {
 	if pageNum < 1 || pageNum > r.doc.NumPages() {
 		return nil, fmt.Errorf("invalid page number: %d", pageNum)
 	}
@@ -737,14 +743,28 @@ func (r *Renderer) RenderPage(pageNum int) (*RenderedImage, error) {
 		height = 1
 	}
 
-	// Create RGB data (white background)
-	data := make([]byte, width*height*3)
-	for i := 0; i < len(data); i++ {
-		data[i] = 255 // White
+	// Create RGBA image with white background
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, color.White)
+		}
 	}
 
-	// Render page content
-	r.renderPageContentToRGB(page, data, width, height)
+	// Render images with proper positioning
+	r.renderImagesWithTransform(page, img, width, height, scaleX, scaleY)
+
+	// Convert to RGB data
+	data := make([]byte, width*height*3)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			c := img.RGBAAt(x, y)
+			idx := (y*width + x) * 3
+			data[idx] = c.R
+			data[idx+1] = c.G
+			data[idx+2] = c.B
+		}
+	}
 
 	return &RenderedImage{
 		Width:  width,
@@ -753,70 +773,211 @@ func (r *Renderer) RenderPage(pageNum int) (*RenderedImage, error) {
 	}, nil
 }
 
-// renderPageContentToRGB renders page content to RGB buffer
-func (r *Renderer) renderPageContentToRGB(page *Page, data []byte, width, height int) {
-	if page.Resources == nil {
+// renderImagesWithTransform renders images with proper transformation matrix
+func (r *Renderer) renderImagesWithTransform(page *Page, img *image.RGBA, width, height int, scaleX, scaleY float64) {
+	contents, err := page.GetContents()
+	if err != nil || contents == nil {
 		return
 	}
 
-	xobjects := page.Resources.Get("XObject")
-	if xobjects == nil {
+	// Parse content stream to get image operations with transforms
+	parser := NewContentStreamParser(contents)
+	ops, err := parser.ParseOperations()
+	if err != nil {
 		return
 	}
 
-	xobjDict, ok := xobjects.(Dictionary)
-	if !ok {
-		return
+	// Graphics state stack
+	type graphicsState struct {
+		ctm [6]float64 // Current Transformation Matrix
 	}
 
-	pageWidth := page.Width()
-	scale := float64(width) / pageWidth
+	// Initialize with identity matrix
+	currentState := &graphicsState{
+		ctm: [6]float64{1, 0, 0, 1, 0, 0},
+	}
+	stateStack := []*graphicsState{}
 
-	for name := range xobjDict {
-		obj := xobjDict.Get(string(name))
-		if obj == nil {
-			continue
+	// Process operations
+	for _, op := range ops {
+		switch op.Operator {
+		case "q": // Save graphics state
+			// Clone current state
+			newState := &graphicsState{
+				ctm: currentState.ctm,
+			}
+			stateStack = append(stateStack, currentState)
+			currentState = newState
+
+		case "Q": // Restore graphics state
+			if len(stateStack) > 0 {
+				currentState = stateStack[len(stateStack)-1]
+				stateStack = stateStack[:len(stateStack)-1]
+			}
+
+		case "cm": // Concatenate matrix
+			if len(op.Operands) >= 6 {
+				a := objectToFloat(op.Operands[0])
+				b := objectToFloat(op.Operands[1])
+				c := objectToFloat(op.Operands[2])
+				d := objectToFloat(op.Operands[3])
+				e := objectToFloat(op.Operands[4])
+				f := objectToFloat(op.Operands[5])
+
+				// Concatenate: CTM' = CTM * M
+				oldCTM := currentState.ctm
+				currentState.ctm = [6]float64{
+					a*oldCTM[0] + b*oldCTM[2],
+					a*oldCTM[1] + b*oldCTM[3],
+					c*oldCTM[0] + d*oldCTM[2],
+					c*oldCTM[1] + d*oldCTM[3],
+					e*oldCTM[0] + f*oldCTM[2] + oldCTM[4],
+					e*oldCTM[1] + f*oldCTM[3] + oldCTM[5],
+				}
+			}
+
+		case "Do": // Draw XObject
+			if len(op.Operands) < 1 {
+				continue
+			}
+
+			xobjName, ok := op.Operands[0].(Name)
+			if !ok {
+				continue
+			}
+
+			// Get XObject from resources
+			if page.Resources == nil {
+				continue
+			}
+
+			xobjects := page.Resources.Get("XObject")
+			if xobjects == nil {
+				continue
+			}
+
+			xobjDict, ok := xobjects.(Dictionary)
+			if !ok {
+				continue
+			}
+
+			xobjRef := xobjDict.Get(string(xobjName))
+			if xobjRef == nil {
+				continue
+			}
+
+			streamObj, err := page.doc.ResolveObject(xobjRef)
+			if err != nil {
+				continue
+			}
+
+			stream, ok := streamObj.(Stream)
+			if !ok {
+				continue
+			}
+
+			subtype, _ := stream.Dictionary.GetName("Subtype")
+			if subtype != "Image" {
+				continue
+			}
+
+			// Render image with current transformation matrix
+			r.renderImageWithCTM(img, stream, currentState.ctm, page.Height(), scaleX, scaleY)
 		}
-
-		streamObj, err := page.doc.ResolveObject(obj)
-		if err != nil {
-			continue
-		}
-
-		stream, ok := streamObj.(Stream)
-		if !ok {
-			continue
-		}
-
-		subtype, _ := stream.Dictionary.GetName("Subtype")
-		if subtype != "Image" {
-			continue
-		}
-
-		imgWidth, _ := stream.Dictionary.GetInt("Width")
-		imgHeight, _ := stream.Dictionary.GetInt("Height")
-		if imgWidth == 0 || imgHeight == 0 {
-			continue
-		}
-
-		imgData, err := r.decodeImageStreamData(stream)
-		if err != nil {
-			continue
-		}
-
-		scaledWidth := int(float64(imgWidth) * scale)
-		scaledHeight := int(float64(imgHeight) * scale)
-
-		r.drawImageToRGB(data, width, height, imgData, int(imgWidth), int(imgHeight), 0, 0, scaledWidth, scaledHeight)
 	}
 }
 
-// decodeImageStreamData decodes image data from PDF stream
-func (r *Renderer) decodeImageStreamData(stream Stream) ([]byte, error) {
+// renderImageWithCTM renders an image with the given transformation matrix
+func (r *Renderer) renderImageWithCTM(img *image.RGBA, stream Stream, ctm [6]float64, pageHeight float64, scaleX, scaleY float64) {
+	imgWidth, _ := stream.Dictionary.GetInt("Width")
+	imgHeight, _ := stream.Dictionary.GetInt("Height")
+	if imgWidth == 0 || imgHeight == 0 {
+		return
+	}
+
+	// Decode image to Go image
+	goImg, err := r.decodeStreamToImage(stream)
+	if err != nil {
+		return
+	}
+
+	// The CTM transforms from image space (0,0)-(1,1) to user space
+	// PDF coordinate system: origin at bottom-left, Y increases upward
+	// Image coordinate system: origin at top-left, Y increases downward
+
+	// Transform image corners from image space to user space
+	// Bottom-left corner (0, 0) in image space
+	x0 := ctm[4]
+	y0 := ctm[5]
+
+	// Calculate width and height in user space (absolute values)
+	userWidth := math.Abs(ctm[0])
+	userHeight := math.Abs(ctm[3])
+
+	// Transform to device coordinates
+	// Convert from PDF coordinates (bottom-left origin) to image coordinates (top-left origin)
+	deviceX := x0 * scaleX
+	deviceY := (pageHeight - y0 - userHeight) * scaleY
+	deviceWidth := userWidth * scaleX
+	deviceHeight := userHeight * scaleY
+
+	dstX := int(math.Round(deviceX))
+	dstY := int(math.Round(deviceY))
+	dstW := int(math.Round(deviceWidth))
+	dstH := int(math.Round(deviceHeight))
+
+	// Ensure positive dimensions
+	if dstW < 0 {
+		dstX += dstW
+		dstW = -dstW
+	}
+	if dstH < 0 {
+		dstY += dstH
+		dstH = -dstH
+	}
+
+	// Draw image
+	r.drawGoImageToTarget(img, goImg, dstX, dstY, dstW, dstH)
+}
+
+// decodeStreamToImage decodes a PDF image stream to a Go image
+func (r *Renderer) decodeStreamToImage(stream Stream) (image.Image, error) {
+	// Get filter
 	filter, _ := stream.Dictionary.GetName("Filter")
 
+	// Handle JPEG images directly
+	if filter == "DCTDecode" {
+		return jpeg.Decode(bytes.NewReader(stream.Data))
+	}
+
+	// Get image properties
+	imgWidth, _ := stream.Dictionary.GetInt("Width")
+	imgHeight, _ := stream.Dictionary.GetInt("Height")
+	bitsPerComponent, _ := stream.Dictionary.GetInt("BitsPerComponent")
+	if bitsPerComponent == 0 {
+		bitsPerComponent = 8
+	}
+
+	// Get color space
+	colorSpace := "DeviceRGB"
+	components := 3
+
+	if cs := stream.Dictionary.Get("ColorSpace"); cs != nil {
+		if name, ok := cs.(Name); ok {
+			colorSpace = string(name)
+			switch colorSpace {
+			case "DeviceGray":
+				components = 1
+			case "DeviceRGB":
+				components = 3
+			case "DeviceCMYK":
+				components = 4
+			}
+		}
+	}
+
+	// Decode stream data
 	data := stream.Data
-	var err error
 
 	switch filter {
 	case "FlateDecode":
@@ -831,22 +992,155 @@ func (r *Renderer) decodeImageStreamData(stream Stream) ([]byte, error) {
 		}
 	}
 
-	return data, err
+	// Convert to Go image based on color space
+	switch components {
+	case 1: // Grayscale
+		return r.decodeGrayImageData(data, int(imgWidth), int(imgHeight))
+	case 3: // RGB
+		return r.decodeRGBImageData(data, int(imgWidth), int(imgHeight))
+	case 4: // CMYK
+		return r.decodeCMYKImageData(data, int(imgWidth), int(imgHeight))
+	default:
+		return r.decodeRGBImageData(data, int(imgWidth), int(imgHeight))
+	}
 }
 
-// drawImageToRGB draws image data to RGB buffer
-func (r *Renderer) drawImageToRGB(target []byte, targetW, targetH int, src []byte, srcW, srcH, dstX, dstY, dstW, dstH int) {
-	for y := 0; y < dstH && dstY+y < targetH; y++ {
-		srcY := y * srcH / dstH
-		for x := 0; x < dstW && dstX+x < targetW; x++ {
-			srcX := x * srcW / dstW
-			srcIdx := (srcY*srcW + srcX) * 3
-			dstIdx := ((dstY+y)*targetW + (dstX + x)) * 3
+// decodeGrayImageData decodes grayscale image data
+func (r *Renderer) decodeGrayImageData(data []byte, width, height int) (image.Image, error) {
+	img := image.NewGray(image.Rect(0, 0, width, height))
+	expectedSize := width * height
 
-			if srcIdx+2 < len(src) && dstIdx+2 < len(target) {
-				target[dstIdx] = src[srcIdx]
-				target[dstIdx+1] = src[srcIdx+1]
-				target[dstIdx+2] = src[srcIdx+2]
+	if len(data) < expectedSize {
+		return nil, fmt.Errorf("insufficient gray data: got %d, need %d", len(data), expectedSize)
+	}
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			idx := y*width + x
+			img.SetGray(x, y, color.Gray{Y: data[idx]})
+		}
+	}
+
+	return img, nil
+}
+
+// decodeRGBImageData decodes RGB image data
+func (r *Renderer) decodeRGBImageData(data []byte, width, height int) (image.Image, error) {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	expectedSize := width * height * 3
+
+	if len(data) < expectedSize {
+		return nil, fmt.Errorf("insufficient RGB data: got %d, need %d", len(data), expectedSize)
+	}
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			idx := (y*width + x) * 3
+			img.SetRGBA(x, y, color.RGBA{
+				R: data[idx],
+				G: data[idx+1],
+				B: data[idx+2],
+				A: 255,
+			})
+		}
+	}
+
+	return img, nil
+}
+
+// decodeCMYKImageData decodes CMYK image data and converts to RGB
+func (r *Renderer) decodeCMYKImageData(data []byte, width, height int) (image.Image, error) {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	expectedSize := width * height * 4
+
+	if len(data) < expectedSize {
+		return nil, fmt.Errorf("insufficient CMYK data: got %d, need %d", len(data), expectedSize)
+	}
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			idx := (y*width + x) * 4
+			c := float64(data[idx]) / 255.0
+			m := float64(data[idx+1]) / 255.0
+			yVal := float64(data[idx+2]) / 255.0
+			k := float64(data[idx+3]) / 255.0
+
+			// CMYK to RGB conversion
+			rVal := uint8((1.0 - c) * (1.0 - k) * 255.0)
+			gVal := uint8((1.0 - m) * (1.0 - k) * 255.0)
+			bVal := uint8((1.0 - yVal) * (1.0 - k) * 255.0)
+
+			img.SetRGBA(x, y, color.RGBA{R: rVal, G: gVal, B: bVal, A: 255})
+		}
+	}
+
+	return img, nil
+}
+
+// drawGoImageToTarget draws a Go image to target RGBA image with scaling
+func (r *Renderer) drawGoImageToTarget(target *image.RGBA, src image.Image, dstX, dstY, dstW, dstH int) {
+	bounds := target.Bounds()
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+
+	for y := 0; y < dstH; y++ {
+		dstYPos := dstY + y
+		if dstYPos < bounds.Min.Y || dstYPos >= bounds.Max.Y {
+			continue
+		}
+
+		srcY := srcBounds.Min.Y + (y * srcH / dstH)
+		if srcY >= srcBounds.Max.Y {
+			srcY = srcBounds.Max.Y - 1
+		}
+
+		for x := 0; x < dstW; x++ {
+			dstXPos := dstX + x
+			if dstXPos < bounds.Min.X || dstXPos >= bounds.Max.X {
+				continue
+			}
+
+			srcX := srcBounds.Min.X + (x * srcW / dstW)
+			if srcX >= srcBounds.Max.X {
+				srcX = srcBounds.Max.X - 1
+			}
+
+			target.Set(dstXPos, dstYPos, src.At(srcX, srcY))
+		}
+	}
+}
+
+// drawImageToRGBA draws image data to RGBA image
+func (r *Renderer) drawImageToRGBA(target *image.RGBA, src []byte, srcW, srcH, dstX, dstY, dstW, dstH int) {
+	bounds := target.Bounds()
+
+	for y := 0; y < dstH; y++ {
+		dstYPos := dstY + y
+		if dstYPos < bounds.Min.Y || dstYPos >= bounds.Max.Y {
+			continue
+		}
+
+		srcY := y * srcH / dstH
+		if srcY >= srcH {
+			srcY = srcH - 1
+		}
+
+		for x := 0; x < dstW; x++ {
+			dstXPos := dstX + x
+			if dstXPos < bounds.Min.X || dstXPos >= bounds.Max.X {
+				continue
+			}
+
+			srcX := x * srcW / dstW
+			if srcX >= srcW {
+				srcX = srcW - 1
+			}
+
+			srcIdx := (srcY*srcW + srcX) * 3
+			if srcIdx+2 < len(src) {
+				c := color.RGBA{src[srcIdx], src[srcIdx+1], src[srcIdx+2], 255}
+				target.Set(dstXPos, dstYPos, c)
 			}
 		}
 	}
@@ -914,6 +1208,5 @@ func writePPM(w io.Writer, img image.Image) error {
 			w.Write([]byte{byte(r >> 8), byte(g >> 8), byte(b >> 8)})
 		}
 	}
-
 	return nil
 }

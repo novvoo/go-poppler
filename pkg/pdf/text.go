@@ -92,7 +92,8 @@ type textItem struct {
 	text       string
 	x, y       float64
 	fontSize   float64
-	colorR     float64 // text color (RGB)
+	tm         [6]float64 // Text matrix at the time of rendering
+	colorR     float64    // text color (RGB)
 	colorG     float64
 	colorB     float64
 	charPos    int     // starting character position in content stream
@@ -559,9 +560,26 @@ func (p *pageTextExtractor) parseToUnicode(font *Font, ref Object) {
 			if len(parts) >= 2 {
 				src := parseHexString(parts[0])
 				dst := parseHexString(parts[1])
-				if len(src) >= 2 && len(dst) >= 2 {
-					srcCode := uint16(src[0])<<8 | uint16(src[1])
-					dstRune := rune(uint16(dst[0])<<8 | uint16(dst[1]))
+				if len(src) > 0 && len(dst) > 0 {
+					// 支持 1 字节和 2 字节编码
+					var srcCode uint16
+					if len(src) == 1 {
+						srcCode = uint16(src[0])
+					} else if len(src) >= 2 {
+						srcCode = uint16(src[0])<<8 | uint16(src[1])
+					}
+
+					// 解析目标 Unicode
+					var dstRune rune
+					if len(dst) == 1 {
+						dstRune = rune(dst[0])
+					} else if len(dst) == 2 {
+						dstRune = rune(uint16(dst[0])<<8 | uint16(dst[1]))
+					} else if len(dst) >= 4 {
+						// UTF-32 编码
+						dstRune = rune(uint32(dst[0])<<24 | uint32(dst[1])<<16 | uint32(dst[2])<<8 | uint32(dst[3]))
+					}
+
 					font.ToUnicode[srcCode] = dstRune
 				}
 			}
@@ -574,10 +592,32 @@ func (p *pageTextExtractor) parseToUnicode(font *Font, ref Object) {
 				start := parseHexString(parts[0])
 				end := parseHexString(parts[1])
 				dst := parseHexString(parts[2])
-				if len(start) >= 2 && len(end) >= 2 && len(dst) >= 2 {
-					startCode := uint16(start[0])<<8 | uint16(start[1])
-					endCode := uint16(end[0])<<8 | uint16(end[1])
-					dstRune := rune(uint16(dst[0])<<8 | uint16(dst[1]))
+				if len(start) > 0 && len(end) > 0 && len(dst) > 0 {
+					// 支持 1 字节和 2 字节编码
+					var startCode, endCode uint16
+					if len(start) == 1 {
+						startCode = uint16(start[0])
+					} else if len(start) >= 2 {
+						startCode = uint16(start[0])<<8 | uint16(start[1])
+					}
+
+					if len(end) == 1 {
+						endCode = uint16(end[0])
+					} else if len(end) >= 2 {
+						endCode = uint16(end[0])<<8 | uint16(end[1])
+					}
+
+					// 解析起始 Unicode
+					var dstRune rune
+					if len(dst) == 1 {
+						dstRune = rune(dst[0])
+					} else if len(dst) == 2 {
+						dstRune = rune(uint16(dst[0])<<8 | uint16(dst[1]))
+					} else if len(dst) >= 4 {
+						dstRune = rune(uint32(dst[0])<<24 | uint32(dst[1])<<16 | uint32(dst[2])<<8 | uint32(dst[3]))
+					}
+
+					// 映射范围内的所有字符
 					for code := startCode; code <= endCode; code++ {
 						font.ToUnicode[code] = dstRune
 						dstRune++
@@ -648,6 +688,7 @@ func (p *pageTextExtractor) showText(data []byte) {
 		x:          x,
 		y:          y,
 		fontSize:   p.fontSize,
+		tm:         p.tm, // Save text matrix for font scaling calculation
 		colorR:     p.fillColorR,
 		colorG:     p.fillColorG,
 		colorB:     p.fillColorB,
@@ -1002,6 +1043,8 @@ type textItemWithFont struct {
 	text       string
 	x, y       float64
 	fontSize   float64
+	tm         [6]float64 // Text matrix at the time of rendering
+	ctm        [6]float64 // Current transformation matrix at the time of rendering
 	font       *Font
 	fontDict   Dictionary
 	charPos    int     // starting character position in content stream
@@ -1032,6 +1075,7 @@ type pageTextExtractorWithFont struct {
 	// Graphics state
 	tm       [6]float64 // Text matrix
 	tlm      [6]float64 // Text line matrix
+	ctm      [6]float64 // Current transformation matrix
 	fontSize float64
 	font     *Font
 	fontDict Dictionary
@@ -1050,14 +1094,19 @@ type pageTextExtractorWithFont struct {
 
 	// Character position tracking
 	charPos int // current character position in content stream
+
+	// Graphics state stack
+	stateStack []textGraphicsState
 }
 
 func (p *pageTextExtractorWithFont) extract(contents []byte) (string, error) {
 	// Initialize state
 	p.tm = [6]float64{1, 0, 0, 1, 0, 0}
 	p.tlm = [6]float64{1, 0, 0, 1, 0, 0}
+	p.ctm = [6]float64{1, 0, 0, 1, 0, 0}
 	p.scale = 100
 	p.fontSize = 12
+	p.stateStack = make([]textGraphicsState, 0)
 
 	// Parse content stream
 	ops, err := p.parseContentStream(contents)
@@ -1146,6 +1195,29 @@ func (p *pageTextExtractorWithFont) parseArrayOperand(_ *Lexer) (Array, error) {
 
 func (p *pageTextExtractorWithFont) processOperation(op Operation) {
 	switch op.Operator {
+	case "q": // Save graphics state
+		p.stateStack = append(p.stateStack, textGraphicsState{ctm: p.ctm})
+
+	case "Q": // Restore graphics state
+		if len(p.stateStack) > 0 {
+			state := p.stateStack[len(p.stateStack)-1]
+			p.stateStack = p.stateStack[:len(p.stateStack)-1]
+			p.ctm = state.ctm
+		}
+
+	case "cm": // Modify CTM
+		if len(op.Operands) >= 6 {
+			newCTM := [6]float64{
+				objectToFloat(op.Operands[0]),
+				objectToFloat(op.Operands[1]),
+				objectToFloat(op.Operands[2]),
+				objectToFloat(op.Operands[3]),
+				objectToFloat(op.Operands[4]),
+				objectToFloat(op.Operands[5]),
+			}
+			p.ctm = multiplyMatrix(p.ctm, newCTM)
+		}
+
 	case "BT": // Begin text
 		p.tm = [6]float64{1, 0, 0, 1, 0, 0}
 		p.tlm = [6]float64{1, 0, 0, 1, 0, 0}
@@ -1364,12 +1436,135 @@ func (p *pageTextExtractorWithFont) parseFont(dict Dictionary) *Font {
 		font.IsIdentity = true
 	}
 
+	// If no ToUnicode mapping and it's a CID font, try to get CID system info
+	if len(font.ToUnicode) == 0 && font.Subtype == "Type0" {
+		_, ordering, _ := GetCIDSystemInfo(dict, p.doc)
+		if ordering != "" {
+			// Build ToUnicode mapping from CID system info
+			mapper := NewCIDToUnicodeMapper(ordering)
+			// Pre-populate common CID range
+			for cid := uint16(0); cid < 65535; cid++ {
+				font.ToUnicode[cid] = mapper.MapCID(cid)
+			}
+		}
+	}
+
 	return font
 }
 
 func (p *pageTextExtractorWithFont) parseToUnicode(font *Font, ref Object) {
-	// Simplified - full implementation in text.go
-	// This would parse the ToUnicode CMap stream
+	obj, err := p.doc.ResolveObject(ref)
+	if err != nil {
+		return
+	}
+
+	stream, ok := obj.(Stream)
+	if !ok {
+		return
+	}
+
+	data, err := stream.Decode()
+	if err != nil {
+		return
+	}
+
+	// Simple CMap parser
+	lines := strings.Split(string(data), "\n")
+	inBfChar := false
+	inBfRange := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		if strings.Contains(line, "beginbfchar") {
+			inBfChar = true
+			continue
+		}
+		if strings.Contains(line, "endbfchar") {
+			inBfChar = false
+			continue
+		}
+		if strings.Contains(line, "beginbfrange") {
+			inBfRange = true
+			continue
+		}
+		if strings.Contains(line, "endbfrange") {
+			inBfRange = false
+			continue
+		}
+
+		if inBfChar {
+			// Format: <src> <dst>
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				src := parseHexString(parts[0])
+				dst := parseHexString(parts[1])
+				if len(src) > 0 && len(dst) > 0 {
+					// 支持 1 字节和 2 字节编码
+					var srcCode uint16
+					if len(src) == 1 {
+						srcCode = uint16(src[0])
+					} else if len(src) >= 2 {
+						srcCode = uint16(src[0])<<8 | uint16(src[1])
+					}
+
+					// 解析目标 Unicode
+					var dstRune rune
+					if len(dst) == 1 {
+						dstRune = rune(dst[0])
+					} else if len(dst) == 2 {
+						dstRune = rune(uint16(dst[0])<<8 | uint16(dst[1]))
+					} else if len(dst) >= 4 {
+						// UTF-32 编码
+						dstRune = rune(uint32(dst[0])<<24 | uint32(dst[1])<<16 | uint32(dst[2])<<8 | uint32(dst[3]))
+					}
+
+					font.ToUnicode[srcCode] = dstRune
+				}
+			}
+		}
+
+		if inBfRange {
+			// Format: <start> <end> <dst>
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				start := parseHexString(parts[0])
+				end := parseHexString(parts[1])
+				dst := parseHexString(parts[2])
+				if len(start) > 0 && len(end) > 0 && len(dst) > 0 {
+					// 支持 1 字节和 2 字节编码
+					var startCode, endCode uint16
+					if len(start) == 1 {
+						startCode = uint16(start[0])
+					} else if len(start) >= 2 {
+						startCode = uint16(start[0])<<8 | uint16(start[1])
+					}
+
+					if len(end) == 1 {
+						endCode = uint16(end[0])
+					} else if len(end) >= 2 {
+						endCode = uint16(end[0])<<8 | uint16(end[1])
+					}
+
+					// 解析起始 Unicode
+					var dstRune rune
+					if len(dst) == 1 {
+						dstRune = rune(dst[0])
+					} else if len(dst) == 2 {
+						dstRune = rune(uint16(dst[0])<<8 | uint16(dst[1]))
+					} else if len(dst) >= 4 {
+						dstRune = rune(uint32(dst[0])<<24 | uint32(dst[1])<<16 | uint32(dst[2])<<8 | uint32(dst[3]))
+					}
+
+					// 映射范围内的所有字符
+					for code := startCode; code <= endCode; code++ {
+						font.ToUnicode[code] = dstRune
+						dstRune++
+					}
+				}
+			}
+		}
+	}
 }
 
 func (p *pageTextExtractorWithFont) showText(data []byte) {
@@ -1379,8 +1574,13 @@ func (p *pageTextExtractorWithFont) showText(data []byte) {
 		return
 	}
 
-	x := p.tm[4]
-	y := p.tm[5]
+	// Get position from text matrix
+	tmX := p.tm[4]
+	tmY := p.tm[5]
+
+	// Apply CTM transformation to get device coordinates (like pageTextExtractor does)
+	x := p.ctm[0]*tmX + p.ctm[2]*tmY + p.ctm[4]
+	y := p.ctm[1]*tmX + p.ctm[3]*tmY + p.ctm[5]
 
 	// Calculate character length
 	charLen := len([]rune(text))
@@ -1408,6 +1608,8 @@ func (p *pageTextExtractorWithFont) showText(data []byte) {
 		x:          x,
 		y:          y,
 		fontSize:   p.fontSize,
+		tm:         p.tm,  // Save text matrix for font scaling calculation
+		ctm:        p.ctm, // Save CTM for combined transformation calculation
 		font:       p.font,
 		fontDict:   p.fontDict,
 		charPos:    p.charPos,

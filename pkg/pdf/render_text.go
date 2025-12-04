@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -35,7 +36,7 @@ func (r *Renderer) RenderPageWithText(pageNum int) (*RenderedImage, error) {
 
 	// First, render the complete page (without text) as base
 	// This includes all graphics, paths, fills, etc.
-	baseImg, err := r.RenderPage(pageNum)
+	baseImg, err := r.renderPageBase(pageNum)
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +45,7 @@ func (r *Renderer) RenderPageWithText(pageNum int) (*RenderedImage, error) {
 	vectorRenderer := NewVectorTextRenderer(r.doc, r.dpiX)
 	img, err := vectorRenderer.RenderPageWithVectorText(page, baseImg, scaleX, scaleY)
 	if err != nil {
+		fmt.Printf("DEBUG: Vector renderer failed, falling back: %v\n", err)
 		// 如果矢量渲染失败，回退到旧方法
 		img = image.NewRGBA(image.Rect(0, 0, width, height))
 
@@ -135,8 +137,17 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 		// Convert PDF coordinates to image coordinates
 		// PDF: origin at bottom-left, Y increases upward
 		// Image: origin at top-left, Y increases downward
-		x := int(item.x * scaleX)
-		y := int((pageHeight - item.y) * scaleY)
+		// Note: item.x and item.y are already in user space after CTM transformation
+		// We need to check if CTM has flipped the Y axis (negative scale)
+		x := int(math.Round(item.x * scaleX))
+		var y int
+		if item.ctm[3] < 0 {
+			// Y axis already flipped by CTM, use coordinates directly
+			y = int(math.Round(item.y * scaleY))
+		} else {
+			// Y axis not flipped, need to flip: device_y = pageHeight - user_y
+			y = int(math.Round((pageHeight - item.y) * scaleY))
+		}
 
 		// Ensure coordinates are within bounds
 		if x < 0 || x >= width {
@@ -152,11 +163,52 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 			defaultFont = fontCache.GetFont(item.font, item.fontDict, r.doc)
 		}
 
-		// Calculate font size in points
+		// Calculate transformed font size using text matrix (like Poppler)
+		// Reference: Poppler's SplashOutputDev::doUpdateFont
+		// m11 = textMat[0] * fontSize * horizScaling
+		// m12 = textMat[1] * fontSize * horizScaling
+		// m21 = textMat[2] * fontSize
+		// m22 = textMat[3] * fontSize
+		// transformedSize = sqrt(m21*m21 + m22*m22)
 		fontSize := item.fontSize
 		if fontSize <= 0 {
 			fontSize = 12
 		}
+
+		// Calculate the transformed font size from text matrix
+		// This accounts for any scaling/rotation in the text matrix
+		// We need to combine CTM and TM to get the final transformation
+		// Combine CTM and TM: finalMatrix = CTM * TM
+		combined := multiplyMatrix(item.ctm, item.tm)
+
+		m11 := combined[0] * fontSize
+		m12 := combined[1] * fontSize
+		m21 := combined[2] * fontSize
+		m22 := combined[3] * fontSize
+
+		// Calculate transformed font size using both horizontal and vertical components
+		// Reference: Poppler's SplashOutputDev::doUpdateFont
+		// We use the larger of the two dimensions to ensure text is visible
+		vertSize := math.Sqrt(m21*m21 + m22*m22)
+		horizSize := math.Sqrt(m11*m11 + m12*m12)
+		transformedFontSize := math.Max(vertSize, horizSize)
+
+		// Fallback to original fontSize if transformation results in zero/tiny size
+		if transformedFontSize < 0.1 {
+			transformedFontSize = fontSize
+		}
+
+		// Debug output for first few items
+		if len(items) <= 3 {
+			fmt.Printf("DEBUG: text='%s' fontSize=%.2f ctm=[%.3f,%.3f,%.3f,%.3f] tm=[%.3f,%.3f,%.3f,%.3f] vert=%.3f horiz=%.3f final=%.3f\n",
+				item.text[:min(10, len(item.text))], fontSize,
+				item.ctm[0], item.ctm[1], item.ctm[2], item.ctm[3],
+				item.tm[0], item.tm[1], item.tm[2], item.tm[3],
+				vertSize, horizSize, transformedFontSize)
+		}
+
+		// Use the transformed size (FreeType will apply DPI scaling on top of this)
+		scaledFontSize := transformedFontSize
 
 		// Check if text contains mixed CJK and non-CJK characters
 		hasCJK := containsCJK(item.text)
@@ -165,7 +217,7 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 		if hasCJK && hasNonCJK {
 			// Mixed text: render character by character with appropriate font
 			mixedCount++
-			r.renderMixedText(img, x, y, item.text, fontSize, defaultFont, cjkFont, fontCache)
+			r.renderMixedText(img, x, y, item.text, scaledFontSize, defaultFont, cjkFont, fontCache)
 		} else if hasCJK {
 			// Pure CJK text: use CJK font
 			pureCJKCount++
@@ -174,14 +226,14 @@ func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, heig
 				ttfFont = defaultFont
 			}
 			if ttfFont != nil {
-				fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
+				fontCache.RenderText(img, x, y, item.text, scaledFontSize, ttfFont, color.Black)
 			}
 		} else if hasNonCJK {
 			// Non-CJK text: use default font (embedded font from PDF)
 			pureNonCJKCount++
 			ttfFont := defaultFont
 			if ttfFont != nil {
-				fontCache.RenderText(img, x, y, item.text, fontSize, ttfFont, color.Black)
+				fontCache.RenderText(img, x, y, item.text, scaledFontSize, ttfFont, color.Black)
 			}
 		}
 	}

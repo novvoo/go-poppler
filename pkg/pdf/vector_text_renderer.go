@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -10,23 +11,23 @@ import (
 
 // VectorTextRenderer 使用矢量方法渲染文本，参考 Poppler 的 CairoOutputDev 实现
 type VectorTextRenderer struct {
-	doc              *Document
-	fontCache        *FontCache
-	fontScanner      *FontScanner
-	dpi              float64
-	antialiasing     bool
-	advancedRenderer *AdvancedTextRenderer
+	doc          *Document
+	fontCache    *FontCache
+	fontScanner  *FontScanner
+	fontRenderer *FontRenderer
+	dpi          float64
+	antialiasing bool
 }
 
 // NewVectorTextRenderer 创建新的矢量文本渲染器
 func NewVectorTextRenderer(doc *Document, dpi float64) *VectorTextRenderer {
 	return &VectorTextRenderer{
-		doc:              doc,
-		fontCache:        NewFontCache(dpi),
-		fontScanner:      GetGlobalFontScanner(),
-		dpi:              dpi,
-		antialiasing:     true,
-		advancedRenderer: NewAdvancedTextRenderer(dpi),
+		doc:          doc,
+		fontCache:    NewFontCache(dpi),
+		fontScanner:  GetGlobalFontScanner(),
+		fontRenderer: NewFontRenderer(dpi),
+		dpi:          dpi,
+		antialiasing: true,
 	}
 }
 
@@ -63,26 +64,113 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 
 	// 渲染每一行
 	pageHeight := page.Height()
-	for _, line := range lines {
-		for _, item := range line.items {
+	fmt.Printf("DEBUG VTR: Total lines=%d\n", len(lines))
+	for lineIdx, line := range lines {
+		if lineIdx == 0 {
+			fmt.Printf("DEBUG VTR: First line has %d items\n", len(line.items))
+		}
+		for itemIdx, item := range line.items {
+			if lineIdx == 0 && itemIdx == 0 {
+				fmt.Printf("DEBUG VTR: Processing first item, text='%s'\n", item.text)
+				fmt.Printf("DEBUG VTR: Raw coords: x=%.2f y=%.2f pageHeight=%.2f\n", item.x, item.y, pageHeight)
+				fmt.Printf("DEBUG VTR: CTM=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
+					item.ctm[0], item.ctm[1], item.ctm[2], item.ctm[3], item.ctm[4], item.ctm[5])
+				fmt.Printf("DEBUG VTR: TM=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
+					item.tm[0], item.tm[1], item.tm[2], item.tm[3], item.tm[4], item.tm[5])
+			}
+
 			if item.text == "" {
+				if lineIdx == 0 && itemIdx == 0 {
+					fmt.Printf("DEBUG VTR: First item has empty text, skipping\n")
+				}
 				continue
 			}
 
-			// 转换坐标：PDF 坐标系 -> 图像坐标系
-			x := int(item.x * scaleX)
-			y := int((pageHeight - item.y) * scaleY)
+			// 转换坐标：用户空间 -> 设备空间
+			// Note: item.x and item.y are already transformed by CTM
+			// The CTM may define a custom coordinate system, so we need to:
+			// 1. Transform page corners using CTM to find the device space bounds
+			// 2. Map item coordinates to image coordinates
+
+			// For now, use a simpler approach:
+			// If CTM has negative Y scale (d < 0), the coordinate system is flipped
+			// In this case, we need to find the maximum Y in device space
+			x := int(math.Round(item.x * scaleX))
+			var y int
+
+			// Calculate device space page height using CTM
+			// Transform (0, pageHeight) to get top-left corner in device space
+			devicePageHeight := math.Abs(item.ctm[3]*pageHeight + item.ctm[5])
+
+			if item.ctm[3] < 0 {
+				// Y axis flipped: device_y increases downward from CTM translation
+				// Map from device space to image space
+				y = int(math.Round((devicePageHeight - item.y) * scaleY))
+			} else {
+				// Y axis not flipped: standard PDF coordinates
+				y = int(math.Round((pageHeight - item.y) * scaleY))
+			}
 
 			// 确保坐标在边界内
 			if x < 0 || x >= img.Bounds().Dx() || y < 0 || y >= img.Bounds().Dy() {
+				if lineIdx == 0 && itemIdx == 0 {
+					fmt.Printf("DEBUG VTR: First item out of bounds: x=%d y=%d (from %.2f, %.2f) bounds=%v\n",
+						x, y, item.x, item.y, img.Bounds())
+				}
 				continue
 			}
 
-			// 获取字体
+			if lineIdx == 0 && itemIdx == 0 {
+				fmt.Printf("DEBUG VTR: First item in bounds: x=%d y=%d\n", x, y)
+			}
+
+			// 计算变换后的字体大小（参考 Poppler 的实现）
+			// Reference: Poppler's SplashOutputDev::doUpdateFont
+			// We need to combine CTM and TM to get the final transformation
 			fontSize := item.fontSize
 			if fontSize <= 0 {
 				fontSize = 12
 			}
+
+			// Combine CTM and TM: finalMatrix = CTM * TM
+			// This gives us the complete transformation from text space to device space
+			combined := multiplyMatrix(item.ctm, item.tm)
+
+			// Calculate transformed font size from the combined matrix
+			// Reference: Poppler calculates this as sqrt(m21^2 + m22^2) where m21, m22 are from combined matrix
+			m11 := combined[0] * fontSize
+			m12 := combined[1] * fontSize
+			m21 := combined[2] * fontSize
+			m22 := combined[3] * fontSize
+
+			// Use vertical component (m21, m22) for font size as per Poppler
+			// But also check horizontal component as fallback
+			vertSize := math.Sqrt(m21*m21 + m22*m22)
+			horizSize := math.Sqrt(m11*m11 + m12*m12)
+
+			// Use the larger of the two to ensure text is visible
+			transformedFontSize := math.Max(vertSize, horizSize)
+
+			// Fallback to original fontSize if transformation results in zero/tiny size
+			if transformedFontSize < 0.1 {
+				transformedFontSize = fontSize
+			}
+
+			// Debug output for first few items in first line
+			if lineIdx == 0 {
+				textPreview := item.text
+				if len(textPreview) > 10 {
+					textPreview = textPreview[:10]
+				}
+				fmt.Printf("DEBUG VTR: text='%s' fontSize=%.2f ctm=[%.3f,%.3f,%.3f,%.3f] tm=[%.3f,%.3f,%.3f,%.3f] vert=%.3f horiz=%.3f final=%.3f\n",
+					textPreview, fontSize,
+					item.ctm[0], item.ctm[1], item.ctm[2], item.ctm[3],
+					item.tm[0], item.tm[1], item.tm[2], item.tm[3],
+					vertSize, horizSize, transformedFontSize)
+			}
+
+			// 使用变换后的大小（FreeType 会在此基础上应用 DPI 缩放）
+			scaledFontSize := transformedFontSize
 
 			// 选择合适的字体
 			ttfFont := vtr.selectFont(item, cjkFont)
@@ -91,7 +179,7 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 			}
 
 			// 使用矢量方法渲染文本
-			vtr.drawTextVector(img, x, y, item.text, fontSize, ttfFont)
+			vtr.drawTextVector(img, x, y, item.text, scaledFontSize, ttfFont)
 		}
 	}
 
@@ -213,9 +301,8 @@ func (vtr *VectorTextRenderer) drawTextVector(img *image.RGBA, x, y int, text st
 		return
 	}
 
-	// 使用高级渲染器，支持字距调整和子像素定位
-	vtr.advancedRenderer.SetAntiAliasing(vtr.antialiasing)
-	vtr.advancedRenderer.RenderText(img, float64(x), float64(y), text, fontSize, ttfFont, color.Black)
+	// 使用 FontRenderer 渲染文本
+	_ = vtr.fontRenderer.RenderText(img, x, y, text, fontSize, ttfFont, color.Black)
 }
 
 // RenderPageWithVectorText 使用矢量方法渲染整个页面（图像+文本）
@@ -248,23 +335,6 @@ func (vtr *VectorTextRenderer) RenderPageWithVectorText(page *Page, baseImg *Ren
 // SetAntialiasing 设置是否使用抗锯齿
 func (vtr *VectorTextRenderer) SetAntialiasing(enabled bool) {
 	vtr.antialiasing = enabled
-	if vtr.advancedRenderer != nil {
-		vtr.advancedRenderer.SetAntiAliasing(enabled)
-	}
-}
-
-// SetKerning 设置是否启用字距调整
-func (vtr *VectorTextRenderer) SetKerning(enabled bool) {
-	if vtr.advancedRenderer != nil {
-		vtr.advancedRenderer.SetKerning(enabled)
-	}
-}
-
-// SetSubpixelPositioning 设置是否启用子像素定位
-func (vtr *VectorTextRenderer) SetSubpixelPositioning(enabled bool) {
-	if vtr.advancedRenderer != nil {
-		vtr.advancedRenderer.SetSubpixelPositioning(enabled)
-	}
 }
 
 // TextBlock 表示一个文本块（参考 Poppler 的 TextBlock）

@@ -502,10 +502,20 @@ func isOperator(tok Token) bool {
 	case TokenObjStart, TokenObjEnd, TokenStreamStart, TokenStreamEnd,
 		TokenXRef, TokenTrailer, TokenStartXRef:
 		return false
+	case TokenName:
+		// Names starting with / are not operators, they are name objects
+		if str, ok := tok.Value.(string); ok && len(str) > 0 && str[0] == '/' {
+			return false
+		}
+		// Check if it's a known operator
+		if str, ok := tok.Value.(string); ok {
+			_, isKnown := ContentStreamOperators[str]
+			return isKnown
+		}
+		return false
 	}
 
-	// Check for known operators by trying to match common ones
-	// This is a simplified check - real implementation would be more comprehensive
+	// For other token types, not operators
 	return false
 }
 
