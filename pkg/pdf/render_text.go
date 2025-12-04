@@ -83,64 +83,6 @@ func (r *Renderer) RenderPageWithText(pageNum int) (*RenderedImage, error) {
 	}, nil
 }
 
-// renderPageImagesToRGBA renders images to RGBA image
-func (r *Renderer) renderPageImagesToRGBA(page *Page, img *image.RGBA, width, height int) {
-	if page.Resources == nil {
-		return
-	}
-
-	xobjects := page.Resources.Get("XObject")
-	if xobjects == nil {
-		return
-	}
-
-	xobjDict, ok := xobjects.(Dictionary)
-	if !ok {
-		return
-	}
-
-	pageWidth := page.Width()
-	scale := float64(width) / pageWidth
-
-	for name := range xobjDict {
-		obj := xobjDict.Get(string(name))
-		if obj == nil {
-			continue
-		}
-
-		streamObj, err := page.doc.ResolveObject(obj)
-		if err != nil {
-			continue
-		}
-
-		stream, ok := streamObj.(Stream)
-		if !ok {
-			continue
-		}
-
-		subtype, _ := stream.Dictionary.GetName("Subtype")
-		if subtype != "Image" {
-			continue
-		}
-
-		imgWidth, _ := stream.Dictionary.GetInt("Width")
-		imgHeight, _ := stream.Dictionary.GetInt("Height")
-		if imgWidth == 0 || imgHeight == 0 {
-			continue
-		}
-
-		imgData, err := r.decodeImageStreamData(stream)
-		if err != nil {
-			continue
-		}
-
-		scaledWidth := int(float64(imgWidth) * scale)
-		scaledHeight := int(float64(imgHeight) * scale)
-
-		r.drawImageToRGBA(img, imgData, int(imgWidth), int(imgHeight), 0, 0, scaledWidth, scaledHeight)
-	}
-}
-
 // renderPageTextToRGBA renders text to RGBA image with proper font rendering
 func (r *Renderer) renderPageTextToRGBA(page *Page, img *image.RGBA, width, height int, scaleX, scaleY float64) {
 	contents, err := page.GetContents()
@@ -349,24 +291,6 @@ func (r *Renderer) renderMixedText(img *image.RGBA, x, y int, text string, fontS
 
 	// Render remaining segment
 	renderSegment()
-}
-
-// drawImageToRGBA draws image data to RGBA image
-func (r *Renderer) drawImageToRGBA(target *image.RGBA, src []byte, srcW, srcH, dstX, dstY, dstW, dstH int) {
-	bounds := target.Bounds()
-
-	for y := 0; y < dstH && dstY+y < bounds.Max.Y; y++ {
-		srcY := y * srcH / dstH
-		for x := 0; x < dstW && dstX+x < bounds.Max.X; x++ {
-			srcX := x * srcW / dstW
-			srcIdx := (srcY*srcW + srcX) * 3
-
-			if srcIdx+2 < len(src) {
-				c := color.RGBA{src[srcIdx], src[srcIdx+1], src[srcIdx+2], 255}
-				target.Set(dstX+x, dstY+y, c)
-			}
-		}
-	}
 }
 
 // RenderPageWithTextToFile renders a page with text and saves to file

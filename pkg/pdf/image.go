@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 )
 
 // ImageInfo contains information about an image in a PDF
@@ -104,7 +105,7 @@ func (e *ImageExtractor) ExtractImages(firstPage, lastPage int) ([]*ImageInfo, e
 }
 
 // extractImageInfo extracts information about an image
-func (e *ImageExtractor) extractImageInfo(stream Stream, pageNum, index int, name string) *ImageInfo {
+func (e *ImageExtractor) extractImageInfo(stream Stream, pageNum, index int, _ string) *ImageInfo {
 	img := &ImageInfo{
 		Page:   pageNum,
 		Index:  index,
@@ -305,11 +306,10 @@ func (e *ImageExtractor) toPPM(info *ImageInfo, data []byte) ([]byte, error) {
 	}
 
 	// Write pixel data
-	if info.Components == 1 {
+	switch info.Components {
+	case 1, 3:
 		buf.Write(data)
-	} else if info.Components == 3 {
-		buf.Write(data)
-	} else if info.Components == 4 {
+	case 4:
 		// Convert CMYK to RGB
 		for i := 0; i+3 < len(data); i += 4 {
 			c, m, y, k := data[i], data[i+1], data[i+2], data[i+3]
@@ -551,4 +551,232 @@ func DecodeFlate(data []byte) ([]byte, error) {
 	defer r.Close()
 
 	return io.ReadAll(r)
+}
+
+// ============================================================================
+// Improved Image Renderer - 基于 Poppler 的图片渲染器
+// ============================================================================
+
+// ImprovedImageRenderer 改进的图片渲染器
+// 基于 Poppler 的 doImage 实现
+type ImprovedImageRenderer struct {
+	state     *TextGraphicsState
+	outputDev ImageOutputDevice
+	debugMode bool
+}
+
+// ImageOutputDevice 图片输出设备接口
+// 参考 Poppler 的 OutputDev 图片相关方法
+type ImageOutputDevice interface {
+	// DrawImage 绘制图片
+	// 参考 Poppler 的 OutputDev::drawImage()
+	DrawImage(state *TextGraphicsState, imageData *ImageData) error
+
+	// DrawImageMask 绘制图片遮罩
+	// 参考 Poppler 的 OutputDev::drawImageMask()
+	DrawImageMask(state *TextGraphicsState, maskData *ImageMaskData) error
+}
+
+// ImageData 图片数据
+type ImageData struct {
+	Width       int
+	Height      int
+	BitsPerComp int
+	ColorSpace  string
+	Data        []byte
+	Interpolate bool
+
+	// 变换信息（从 CTM 计算）
+	X, Y     float64 // 左下角位置
+	ScaleX   float64 // X 方向缩放
+	ScaleY   float64 // Y 方向缩放
+	Rotation int     // 旋转角度 (0, 90, 180, 270)
+
+	// 遮罩信息
+	HasMask    bool
+	MaskColors []int
+}
+
+// ImageMaskData 图片遮罩数据
+type ImageMaskData struct {
+	Width       int
+	Height      int
+	Data        []byte
+	Invert      bool
+	Interpolate bool
+
+	// 变换信息
+	X, Y     float64
+	ScaleX   float64
+	ScaleY   float64
+	Rotation int
+}
+
+// NewImprovedImageRenderer 创建改进的图片渲染器
+func NewImprovedImageRenderer(state *TextGraphicsState, outputDev ImageOutputDevice) *ImprovedImageRenderer {
+	return &ImprovedImageRenderer{
+		state:     state,
+		outputDev: outputDev,
+		debugMode: false,
+	}
+}
+
+// RenderImage 渲染图片
+// 参考 Poppler 的 Gfx::doImage()
+func (r *ImprovedImageRenderer) RenderImage(imageData *ImageData) error {
+	// 1. 检查 CTM 是否奇异（参考 Poppler）
+	if r.state.IsSingularMatrix() {
+		if r.debugMode {
+			fmt.Println("Warning: Singular matrix detected, skipping image")
+		}
+		return fmt.Errorf("singular transformation matrix")
+	}
+
+	// 2. 检查图片尺寸有效性（参考 Poppler）
+	if imageData.Width < 1 || imageData.Height < 1 {
+		return fmt.Errorf("invalid image dimensions: %dx%d", imageData.Width, imageData.Height)
+	}
+
+	// 防止整数溢出
+	if imageData.Width > math.MaxInt32/imageData.Height {
+		return fmt.Errorf("image dimensions too large")
+	}
+
+	// 3. 从 CTM 计算图片的实际位置和大小
+	// 参考 Poppler: 图片从单位正方形 [0,0,1,1] 映射到目标位置
+	r.calculateImageTransform(imageData)
+
+	if r.debugMode {
+		fmt.Printf("RenderImage: size=%dx%d, pos=(%.2f,%.2f), scale=(%.2f,%.2f), rot=%d\n",
+			imageData.Width, imageData.Height,
+			imageData.X, imageData.Y,
+			imageData.ScaleX, imageData.ScaleY,
+			imageData.Rotation)
+	}
+
+	// 4. 调用输出设备绘制图片
+	return r.outputDev.DrawImage(r.state, imageData)
+}
+
+// RenderImageMask 渲染图片遮罩
+// 参考 Poppler 的图片遮罩处理
+func (r *ImprovedImageRenderer) RenderImageMask(maskData *ImageMaskData) error {
+	// 检查 CTM
+	if r.state.IsSingularMatrix() {
+		return fmt.Errorf("singular transformation matrix")
+	}
+
+	// 检查尺寸
+	if maskData.Width < 1 || maskData.Height < 1 {
+		return fmt.Errorf("invalid mask dimensions")
+	}
+
+	// 计算变换
+	r.calculateMaskTransform(maskData)
+
+	if r.debugMode {
+		fmt.Printf("RenderImageMask: size=%dx%d, pos=(%.2f,%.2f), invert=%v\n",
+			maskData.Width, maskData.Height,
+			maskData.X, maskData.Y,
+			maskData.Invert)
+	}
+
+	return r.outputDev.DrawImageMask(r.state, maskData)
+}
+
+// calculateImageTransform 计算图片变换
+// 参考 Poppler 的 CTM 应用逻辑
+func (r *ImprovedImageRenderer) calculateImageTransform(imageData *ImageData) {
+	ctm := r.state.CTM
+
+	// PDF 图片从单位正方形 [0,0,1,1] 映射到目标位置
+	// CTM 定义了这个映射: [x' y' 1] = [x y 1] * CTM
+
+	// 左下角 (0, 0) 映射到
+	imageData.X = ctm[4]
+	imageData.Y = ctm[5]
+
+	// 计算缩放因子
+	// 右上角 (1, 1) 映射到 (ctm[0]+ctm[4], ctm[3]+ctm[5])
+	imageData.ScaleX = math.Sqrt(ctm[0]*ctm[0] + ctm[1]*ctm[1])
+	imageData.ScaleY = math.Sqrt(ctm[2]*ctm[2] + ctm[3]*ctm[3])
+
+	// 计算旋转角度
+	imageData.Rotation = getRotationFromMatrix(ctm)
+
+	// 调整负缩放（翻转）
+	det := matrixDeterminant(ctm)
+	if det < 0 {
+		imageData.ScaleY = -imageData.ScaleY
+	}
+}
+
+// calculateMaskTransform 计算遮罩变换
+func (r *ImprovedImageRenderer) calculateMaskTransform(maskData *ImageMaskData) {
+	ctm := r.state.CTM
+
+	maskData.X = ctm[4]
+	maskData.Y = ctm[5]
+	maskData.ScaleX = math.Sqrt(ctm[0]*ctm[0] + ctm[1]*ctm[1])
+	maskData.ScaleY = math.Sqrt(ctm[2]*ctm[2] + ctm[3]*ctm[3])
+	maskData.Rotation = getRotationFromMatrix(ctm)
+}
+
+// SetDebugMode 设置调试模式
+func (r *ImprovedImageRenderer) SetDebugMode(debug bool) {
+	r.debugMode = debug
+}
+
+// SimpleImageOutputDevice 简单的图片输出设备实现
+type SimpleImageOutputDevice struct {
+	images []RenderedImageInfo
+}
+
+// RenderedImageInfo 渲染的图片信息
+type RenderedImageInfo struct {
+	Width    int
+	Height   int
+	X, Y     float64
+	ScaleX   float64
+	ScaleY   float64
+	Rotation int
+	Data     []byte
+}
+
+// NewSimpleImageOutputDevice 创建简单图片输出设备
+func NewSimpleImageOutputDevice() *SimpleImageOutputDevice {
+	return &SimpleImageOutputDevice{
+		images: make([]RenderedImageInfo, 0),
+	}
+}
+
+// DrawImage 实现 ImageOutputDevice 接口
+func (d *SimpleImageOutputDevice) DrawImage(state *TextGraphicsState, imageData *ImageData) error {
+	d.images = append(d.images, RenderedImageInfo{
+		Width:    imageData.Width,
+		Height:   imageData.Height,
+		X:        imageData.X,
+		Y:        imageData.Y,
+		ScaleX:   imageData.ScaleX,
+		ScaleY:   imageData.ScaleY,
+		Rotation: imageData.Rotation,
+		Data:     imageData.Data,
+	})
+	return nil
+}
+
+// DrawImageMask 实现 ImageOutputDevice 接口
+func (d *SimpleImageOutputDevice) DrawImageMask(state *TextGraphicsState, maskData *ImageMaskData) error {
+	// 简化实现：将遮罩作为普通图片处理
+	return nil
+}
+
+// GetImages 获取所有渲染的图片
+func (d *SimpleImageOutputDevice) GetImages() []RenderedImageInfo {
+	return d.images
+}
+
+// Clear 清空图片列表
+func (d *SimpleImageOutputDevice) Clear() {
+	d.images = d.images[:0]
 }
