@@ -1724,12 +1724,13 @@ func (tl *TextLayout) BuildLayoutText() string {
 					spaces = 50 // Cap at 50 spaces
 				}
 
-				if spaces == 0 {
+				switch spaces {
+				case 0:
 					// No gap - merge directly
-				} else if spaces == 1 {
+				case 1:
 					// Single space
 					lineText.WriteString(" ")
-				} else {
+				default:
 					// Multiple spaces
 					lineText.WriteString(strings.Repeat(" ", spaces))
 				}
@@ -2203,10 +2204,7 @@ type PopplerTextOutputDev struct {
 type PopplerTextFontInfo struct {
 	font     *Font
 	fontDict Dictionary
-	gfxFont  any // 对应 GfxFont
-	ascent   float64
-	descent  float64
-	wMode    int // 书写模式：0=水平，1=垂直
+	wMode    int
 }
 
 // PopplerCharInfo 字符信息（对应 Poppler 的 CharInfo）
@@ -2239,7 +2237,6 @@ type PopplerTextPool struct {
 	maxBaseIdx int
 	pool       map[int]*PopplerTextWord
 	cursor     map[int]*PopplerTextWord
-	fontSize   float64
 }
 
 // NewPopplerTextOutputDev 创建新的 Poppler 风格文本输出设备
@@ -2251,7 +2248,6 @@ func NewPopplerTextOutputDev(doc *Document, page *Page) *PopplerTextOutputDev {
 		pageHeight: page.Height(),
 		rawOrder:   false,
 
-		// Poppler 的默认常量
 		minDupBreakOverlap: 0.1,
 		dupMaxPriDelta:     0.5,
 		dupMaxSecDelta:     0.5,
@@ -2599,4 +2595,875 @@ func (dev *PopplerTextOutputDev) BuildText() string {
 	}
 
 	return result
+}
+
+// ============================================================================
+// Multi-Column Layout Detection - 多列布局检测
+// ============================================================================
+
+// ColumnLayout represents a multi-column layout
+type ColumnLayout struct {
+	Columns []Column
+	Gaps    []float64 // Gaps between columns
+}
+
+// Column represents a single column in a multi-column layout
+type Column struct {
+	XMin   float64
+	XMax   float64
+	Lines  []textLine
+	Width  float64
+	Margin float64
+}
+
+// MultiColumnDetector detects multi-column layouts in PDF pages
+// Based on Poppler's column detection algorithm
+type MultiColumnDetector struct {
+	pageWidth   float64
+	pageHeight  float64
+	minColWidth float64 // Minimum column width
+	minGapWidth float64 // Minimum gap between columns
+	maxColumns  int     // Maximum number of columns to detect
+	debugMode   bool
+}
+
+// NewMultiColumnDetector creates a new multi-column detector
+func NewMultiColumnDetector(pageWidth, pageHeight float64) *MultiColumnDetector {
+	return &MultiColumnDetector{
+		pageWidth:   pageWidth,
+		pageHeight:  pageHeight,
+		minColWidth: 100, // Minimum 100 points wide
+		minGapWidth: 20,  // Minimum 20 points gap
+		maxColumns:  4,   // Maximum 4 columns
+		debugMode:   false,
+	}
+}
+
+// DetectColumns detects columns in text items
+func (mcd *MultiColumnDetector) DetectColumns(items []textItem) *ColumnLayout {
+	if len(items) == 0 {
+		return &ColumnLayout{Columns: []Column{}}
+	}
+
+	// Group items into lines first
+	lines := mcd.groupIntoLines(items)
+	if len(lines) == 0 {
+		return &ColumnLayout{Columns: []Column{}}
+	}
+
+	// Analyze X positions to find column boundaries
+	xPositions := mcd.collectXPositions(lines)
+	if len(xPositions) == 0 {
+		return &ColumnLayout{Columns: []Column{}}
+	}
+
+	// Find gaps in X positions (potential column boundaries)
+	gaps := mcd.findGaps(xPositions)
+
+	// If no significant gaps found, treat as single column
+	if len(gaps) == 0 {
+		return mcd.createSingleColumn(lines)
+	}
+
+	// Create columns based on gaps
+	columns := mcd.createColumns(lines, gaps)
+
+	return &ColumnLayout{
+		Columns: columns,
+		Gaps:    mcd.extractGapWidths(gaps),
+	}
+}
+
+// groupIntoLines groups text items into lines
+func (mcd *MultiColumnDetector) groupIntoLines(items []textItem) []textLine {
+	threshold := 5.0 // pixels
+	var lines []textLine
+
+	for _, item := range items {
+		foundLine := false
+		for i := range lines {
+			if math.Abs(lines[i].y-item.y) <= threshold {
+				lines[i].items = append(lines[i].items, item)
+				lines[i].y = (lines[i].y*float64(len(lines[i].items)-1) + item.y) / float64(len(lines[i].items))
+				foundLine = true
+				break
+			}
+		}
+
+		if !foundLine {
+			lines = append(lines, textLine{
+				y:     item.y,
+				items: []textItem{item},
+			})
+		}
+	}
+
+	// Sort lines by Y position
+	sort.Slice(lines, func(i, j int) bool {
+		return lines[i].y > lines[j].y
+	})
+
+	return lines
+}
+
+// collectXPositions collects all X positions from lines
+func (mcd *MultiColumnDetector) collectXPositions(lines []textLine) []float64 {
+	xMap := make(map[int]int) // X position -> count
+
+	for _, line := range lines {
+		for _, item := range line.items {
+			// Round to nearest 5 points for clustering
+			xBucket := int(math.Round(item.x/5) * 5)
+			xMap[xBucket]++
+		}
+	}
+
+	// Convert to sorted slice
+	var positions []float64
+	for x := range xMap {
+		positions = append(positions, float64(x))
+	}
+	sort.Float64s(positions)
+
+	return positions
+}
+
+// findGaps finds significant gaps in X positions
+func (mcd *MultiColumnDetector) findGaps(positions []float64) []Gap {
+	if len(positions) < 2 {
+		return nil
+	}
+
+	var gaps []Gap
+
+	for i := 0; i < len(positions)-1; i++ {
+		gap := positions[i+1] - positions[i]
+
+		// Check if gap is significant
+		if gap >= mcd.minGapWidth {
+			gaps = append(gaps, Gap{
+				Start: positions[i],
+				End:   positions[i+1],
+				Width: gap,
+			})
+		}
+	}
+
+	// Filter out small gaps and merge nearby gaps
+	gaps = mcd.filterAndMergeGaps(gaps)
+
+	return gaps
+}
+
+// Gap represents a gap between columns
+type Gap struct {
+	Start float64
+	End   float64
+	Width float64
+}
+
+// filterAndMergeGaps filters and merges nearby gaps
+func (mcd *MultiColumnDetector) filterAndMergeGaps(gaps []Gap) []Gap {
+	if len(gaps) == 0 {
+		return gaps
+	}
+
+	// Sort by start position
+	sort.Slice(gaps, func(i, j int) bool {
+		return gaps[i].Start < gaps[j].Start
+	})
+
+	// Merge nearby gaps
+	merged := []Gap{gaps[0]}
+
+	for i := 1; i < len(gaps); i++ {
+		last := &merged[len(merged)-1]
+		current := gaps[i]
+
+		// If gaps are close, merge them
+		if current.Start-last.End < mcd.minGapWidth {
+			last.End = current.End
+			last.Width = last.End - last.Start
+		} else {
+			merged = append(merged, current)
+		}
+	}
+
+	// Limit to maxColumns-1 gaps (maxColumns columns)
+	if len(merged) > mcd.maxColumns-1 {
+		// Keep the widest gaps
+		sort.Slice(merged, func(i, j int) bool {
+			return merged[i].Width > merged[j].Width
+		})
+		merged = merged[:mcd.maxColumns-1]
+
+		// Re-sort by position
+		sort.Slice(merged, func(i, j int) bool {
+			return merged[i].Start < merged[j].Start
+		})
+	}
+
+	return merged
+}
+
+// createColumns creates columns based on gaps
+func (mcd *MultiColumnDetector) createColumns(lines []textLine, gaps []Gap) []Column {
+	// Define column boundaries
+	boundaries := []float64{0} // Start with left edge
+
+	for _, gap := range gaps {
+		// Use middle of gap as boundary
+		boundaries = append(boundaries, (gap.Start+gap.End)/2)
+	}
+
+	boundaries = append(boundaries, mcd.pageWidth) // End with right edge
+
+	// Create columns
+	columns := make([]Column, len(boundaries)-1)
+
+	for i := range columns {
+		columns[i] = Column{
+			XMin:  boundaries[i],
+			XMax:  boundaries[i+1],
+			Width: boundaries[i+1] - boundaries[i],
+			Lines: make([]textLine, 0),
+		}
+	}
+
+	// Assign lines to columns
+	for _, line := range lines {
+		// Calculate line's center X
+		lineXMin, lineXMax := mcd.getLineXBounds(line)
+		lineCenterX := (lineXMin + lineXMax) / 2
+
+		// Find which column this line belongs to
+		for i := range columns {
+			if lineCenterX >= columns[i].XMin && lineCenterX < columns[i].XMax {
+				columns[i].Lines = append(columns[i].Lines, line)
+				break
+			}
+		}
+	}
+
+	return columns
+}
+
+// createSingleColumn creates a single column layout
+func (mcd *MultiColumnDetector) createSingleColumn(lines []textLine) *ColumnLayout {
+	return &ColumnLayout{
+		Columns: []Column{
+			{
+				XMin:  0,
+				XMax:  mcd.pageWidth,
+				Width: mcd.pageWidth,
+				Lines: lines,
+			},
+		},
+		Gaps: []float64{},
+	}
+}
+
+// getLineXBounds gets the X bounds of a line
+func (mcd *MultiColumnDetector) getLineXBounds(line textLine) (float64, float64) {
+	if len(line.items) == 0 {
+		return 0, 0
+	}
+
+	xMin := line.items[0].x
+	xMax := line.items[0].x
+
+	for _, item := range line.items {
+		if item.x < xMin {
+			xMin = item.x
+		}
+		if item.x > xMax {
+			xMax = item.x
+		}
+	}
+
+	return xMin, xMax
+}
+
+// extractGapWidths extracts gap widths
+func (mcd *MultiColumnDetector) extractGapWidths(gaps []Gap) []float64 {
+	widths := make([]float64, len(gaps))
+	for i, gap := range gaps {
+		widths[i] = gap.Width
+	}
+	return widths
+}
+
+// BuildMultiColumnText builds text respecting multi-column layout
+func (mcd *MultiColumnDetector) BuildMultiColumnText(layout *ColumnLayout) string {
+	if len(layout.Columns) == 0 {
+		return ""
+	}
+
+	var buf bytes.Buffer
+
+	// Process each column
+	for colIdx, col := range layout.Columns {
+		if colIdx > 0 {
+			buf.WriteString("\n\n--- Column ")
+			buf.WriteString(fmt.Sprintf("%d", colIdx+1))
+			buf.WriteString(" ---\n\n")
+		}
+
+		// Build text for this column
+		for lineIdx, line := range col.Lines {
+			if lineIdx > 0 {
+				buf.WriteString("\n")
+			}
+
+			// Sort items in line by X
+			sort.Slice(line.items, func(i, j int) bool {
+				return line.items[i].x < line.items[j].x
+			})
+
+			// Build line text
+			for itemIdx, item := range line.items {
+				if itemIdx > 0 {
+					buf.WriteString(" ")
+				}
+				buf.WriteString(item.text)
+			}
+		}
+	}
+
+	return buf.String()
+}
+
+// SetDebugMode sets debug mode
+func (mcd *MultiColumnDetector) SetDebugMode(debug bool) {
+	mcd.debugMode = debug
+}
+
+// ============================================================================
+// Advanced Text Layout Algorithm - 高级文本布局算法
+// ============================================================================
+
+// AdvancedTextLayout implements Poppler-style advanced text layout
+// Based on Poppler's TextPage::coalesce() algorithm
+type AdvancedTextLayout struct {
+	pageWidth      float64
+	pageHeight     float64
+	items          []textItem
+	blocks         []*AdvancedTextBlock
+	flows          []*TextFlow
+	primaryRot     int
+	primaryLR      bool
+	rawOrder       bool
+	physLayout     bool
+	fixedPitch     float64
+	minColSpacing1 float64
+	minColSpacing2 float64
+}
+
+// AdvancedTextBlock represents a block of text (like Poppler's TextBlock)
+type AdvancedTextBlock struct {
+	xMin     float64
+	xMax     float64
+	yMin     float64
+	yMax     float64
+	lines    []*TextLine
+	nLines   int
+	col      int
+	nColumns int
+}
+
+// TextLine represents a line of text (like Poppler's TextLine)
+type TextLine struct {
+	xMin     float64
+	xMax     float64
+	yMin     float64
+	yMax     float64
+	base     float64
+	words    []*TextWord
+	lastWord *TextWord
+}
+
+// TextWord represents a word (like Poppler's TextWord)
+type TextWord struct {
+	xMin     float64
+	xMax     float64
+	yMin     float64
+	yMax     float64
+	base     float64
+	fontSize float64
+	text     string
+	next     *TextWord
+}
+
+// TextFlow represents a flow of text blocks (like Poppler's TextFlow)
+type TextFlow struct {
+	xMin   float64
+	xMax   float64
+	yMin   float64
+	yMax   float64
+	blocks []*AdvancedTextBlock
+}
+
+// NewAdvancedTextLayout creates a new advanced text layout processor
+func NewAdvancedTextLayout(pageWidth, pageHeight float64, items []textItem) *AdvancedTextLayout {
+	return &AdvancedTextLayout{
+		pageWidth:      pageWidth,
+		pageHeight:     pageHeight,
+		items:          items,
+		blocks:         make([]*AdvancedTextBlock, 0),
+		flows:          make([]*TextFlow, 0),
+		primaryRot:     0,
+		primaryLR:      true,
+		physLayout:     true,
+		minColSpacing1: 0.7, // From Poppler
+		minColSpacing2: 1.0, // From Poppler
+	}
+}
+
+// Coalesce performs the coalesce algorithm (like Poppler's TextPage::coalesce)
+func (atl *AdvancedTextLayout) Coalesce() error {
+	if len(atl.items) == 0 {
+		return nil
+	}
+
+	// Step 1: Group items into words
+	words := atl.groupIntoWords()
+
+	// Step 2: Group words into lines
+	lines := atl.groupWordsIntoLines(words)
+
+	// Step 3: Group lines into blocks
+	blocks := atl.groupLinesIntoBlocks(lines)
+
+	// Step 4: Detect columns in blocks
+	atl.detectColumns(blocks)
+
+	// Step 5: Group blocks into flows
+	flows := atl.groupBlocksIntoFlows(blocks)
+
+	atl.blocks = blocks
+	atl.flows = flows
+
+	return nil
+}
+
+// groupIntoWords groups text items into words
+func (atl *AdvancedTextLayout) groupIntoWords() []*TextWord {
+	if len(atl.items) == 0 {
+		return nil
+	}
+
+	var words []*TextWord
+	var currentWord *TextWord
+
+	// Sort items by position
+	sortedItems := make([]textItem, len(atl.items))
+	copy(sortedItems, atl.items)
+
+	// Group by Y first, then X
+	sort.Slice(sortedItems, func(i, j int) bool {
+		if math.Abs(sortedItems[i].y-sortedItems[j].y) > 5 {
+			return sortedItems[i].y > sortedItems[j].y
+		}
+		return sortedItems[i].x < sortedItems[j].x
+	})
+
+	for _, item := range sortedItems {
+		if currentWord == nil {
+			// Start new word
+			currentWord = &TextWord{
+				text:     item.text,
+				xMin:     item.x,
+				xMax:     item.x + atl.estimateWidth(item.text),
+				yMin:     item.y - 10,
+				yMax:     item.y + 2,
+				base:     item.y,
+				fontSize: 12,
+			}
+		} else {
+			// Check if should merge with current word
+			gap := item.x - currentWord.xMax
+
+			if gap < 0 || gap > currentWord.fontSize*0.3 || math.Abs(item.y-currentWord.base) > 2 {
+				// Start new word
+				words = append(words, currentWord)
+				currentWord = &TextWord{
+					text:     item.text,
+					xMin:     item.x,
+					xMax:     item.x + atl.estimateWidth(item.text),
+					yMin:     item.y - 10,
+					yMax:     item.y + 2,
+					base:     item.y,
+					fontSize: 12,
+				}
+			} else {
+				// Merge with current word
+				currentWord.text += item.text
+				currentWord.xMax = item.x + atl.estimateWidth(item.text)
+			}
+		}
+	}
+
+	if currentWord != nil {
+		words = append(words, currentWord)
+	}
+
+	return words
+}
+
+// groupWordsIntoLines groups words into lines
+func (atl *AdvancedTextLayout) groupWordsIntoLines(words []*TextWord) []*TextLine {
+	if len(words) == 0 {
+		return nil
+	}
+
+	var lines []*TextLine
+
+	// Group words by Y position
+	for _, word := range words {
+		foundLine := false
+
+		for _, line := range lines {
+			// Check if word belongs to this line
+			if math.Abs(word.base-line.base) < word.fontSize*0.3 {
+				// Add word to line
+				if line.lastWord != nil {
+					line.lastWord.next = word
+				} else {
+					line.words = []*TextWord{word}
+				}
+				line.lastWord = word
+
+				// Update line bounds
+				if word.xMin < line.xMin {
+					line.xMin = word.xMin
+				}
+				if word.xMax > line.xMax {
+					line.xMax = word.xMax
+				}
+				if word.yMin < line.yMin {
+					line.yMin = word.yMin
+				}
+				if word.yMax > line.yMax {
+					line.yMax = word.yMax
+				}
+
+				foundLine = true
+				break
+			}
+		}
+
+		if !foundLine {
+			// Create new line
+			line := &TextLine{
+				xMin:     word.xMin,
+				xMax:     word.xMax,
+				yMin:     word.yMin,
+				yMax:     word.yMax,
+				base:     word.base,
+				words:    []*TextWord{word},
+				lastWord: word,
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	// Sort lines by Y position
+	sort.Slice(lines, func(i, j int) bool {
+		return lines[i].base > lines[j].base
+	})
+
+	return lines
+}
+
+// groupLinesIntoBlocks groups lines into blocks
+func (atl *AdvancedTextLayout) groupLinesIntoBlocks(lines []*TextLine) []*AdvancedTextBlock {
+	if len(lines) == 0 {
+		return nil
+	}
+
+	var blocks []*AdvancedTextBlock
+
+	for _, line := range lines {
+		foundBlock := false
+
+		for _, block := range blocks {
+			// Check if line belongs to this block
+			// Lines should have similar X alignment and reasonable Y spacing
+			if atl.linesBelongToSameBlock(block.lines[len(block.lines)-1], line) {
+				// Add line to block
+				block.lines = append(block.lines, line)
+				block.nLines++
+
+				// Update block bounds
+				if line.xMin < block.xMin {
+					block.xMin = line.xMin
+				}
+				if line.xMax > block.xMax {
+					block.xMax = line.xMax
+				}
+				if line.yMin < block.yMin {
+					block.yMin = line.yMin
+				}
+				if line.yMax > block.yMax {
+					block.yMax = line.yMax
+				}
+
+				foundBlock = true
+				break
+			}
+		}
+
+		if !foundBlock {
+			// Create new block
+			block := &AdvancedTextBlock{
+				xMin:   line.xMin,
+				xMax:   line.xMax,
+				yMin:   line.yMin,
+				yMax:   line.yMax,
+				lines:  []*TextLine{line},
+				nLines: 1,
+			}
+			blocks = append(blocks, block)
+		}
+	}
+
+	return blocks
+}
+
+// linesBelongToSameBlock checks if two lines belong to the same block
+func (atl *AdvancedTextLayout) linesBelongToSameBlock(line1, line2 *TextLine) bool {
+	// Check X alignment (should start at similar X position)
+	xDiff := math.Abs(line1.xMin - line2.xMin)
+	if xDiff > 20 {
+		return false
+	}
+
+	// Check Y spacing (should not be too far apart)
+	yDiff := math.Abs(line1.base - line2.base)
+	return yDiff <= 30
+}
+
+// detectColumns detects columns in blocks
+func (atl *AdvancedTextLayout) detectColumns(blocks []*AdvancedTextBlock) {
+	// Analyze X positions to detect columns
+	// This is a simplified version - full implementation would be more complex
+
+	for _, block := range blocks {
+		// For now, assume single column
+		block.col = 0
+		block.nColumns = 1
+	}
+}
+
+// groupBlocksIntoFlows groups blocks into flows
+func (atl *AdvancedTextLayout) groupBlocksIntoFlows(blocks []*AdvancedTextBlock) []*TextFlow {
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	var flows []*TextFlow
+
+	for _, block := range blocks {
+		foundFlow := false
+
+		for _, flow := range flows {
+			// Check if block belongs to this flow
+			// Blocks in same flow should be vertically aligned
+			if atl.blocksBelongToSameFlow(flow.blocks[len(flow.blocks)-1], block) {
+				// Add block to flow
+				flow.blocks = append(flow.blocks, block)
+
+				// Update flow bounds
+				if block.xMin < flow.xMin {
+					flow.xMin = block.xMin
+				}
+				if block.xMax > flow.xMax {
+					flow.xMax = block.xMax
+				}
+				if block.yMin < flow.yMin {
+					flow.yMin = block.yMin
+				}
+				if block.yMax > flow.yMax {
+					flow.yMax = block.yMax
+				}
+
+				foundFlow = true
+				break
+			}
+		}
+
+		if !foundFlow {
+			// Create new flow
+			flow := &TextFlow{
+				xMin:   block.xMin,
+				xMax:   block.xMax,
+				yMin:   block.yMin,
+				yMax:   block.yMax,
+				blocks: []*AdvancedTextBlock{block},
+			}
+			flows = append(flows, flow)
+		}
+	}
+
+	return flows
+}
+
+// blocksBelongToSameFlow checks if two blocks belong to the same flow
+func (atl *AdvancedTextLayout) blocksBelongToSameFlow(block1, block2 *AdvancedTextBlock) bool {
+	// Check X alignment
+	xOverlap := math.Min(block1.xMax, block2.xMax) - math.Max(block1.xMin, block2.xMin)
+	if xOverlap < 0 {
+		return false
+	}
+
+	// Check Y spacing
+	yGap := block1.yMin - block2.yMax
+	if yGap < 0 || yGap > 50 {
+		return false
+	}
+
+	return true
+}
+
+// BuildText builds text from the layout
+func (atl *AdvancedTextLayout) BuildText() string {
+	var buf bytes.Buffer
+
+	for flowIdx, flow := range atl.flows {
+		if flowIdx > 0 {
+			buf.WriteString("\n\n")
+		}
+
+		for blockIdx, block := range flow.blocks {
+			if blockIdx > 0 {
+				buf.WriteString("\n")
+			}
+
+			for lineIdx, line := range block.lines {
+				if lineIdx > 0 {
+					buf.WriteString("\n")
+				}
+
+				for wordIdx, word := range line.words {
+					if wordIdx > 0 {
+						buf.WriteString(" ")
+					}
+					buf.WriteString(word.text)
+				}
+			}
+		}
+	}
+
+	return buf.String()
+}
+
+// estimateWidth estimates text width
+func (atl *AdvancedTextLayout) estimateWidth(text string) float64 {
+	width := 0.0
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			width += 12 // CJK
+		} else {
+			width += 6 // ASCII
+		}
+	}
+	return width
+}
+
+// SetPhysLayout sets physical layout mode
+func (atl *AdvancedTextLayout) SetPhysLayout(phys bool) {
+	atl.physLayout = phys
+}
+
+// SetRawOrder sets raw order mode
+func (atl *AdvancedTextLayout) SetRawOrder(raw bool) {
+	atl.rawOrder = raw
+}
+
+// SetFixedPitch sets fixed pitch spacing
+func (atl *AdvancedTextLayout) SetFixedPitch(pitch float64) {
+	atl.fixedPitch = pitch
+}
+
+// GetBlocks returns the text blocks
+func (atl *AdvancedTextLayout) GetBlocks() []*AdvancedTextBlock {
+	return atl.blocks
+}
+
+// GetFlows returns the text flows
+func (atl *AdvancedTextLayout) GetFlows() []*TextFlow {
+	return atl.flows
+}
+
+// ============================================================================
+// Helper Functions for Advanced Layout
+// ============================================================================
+
+// ExtractTextWithAdvancedLayout extracts text using advanced layout algorithm
+func ExtractTextWithAdvancedLayout(page *Page) (string, error) {
+	if page == nil {
+		return "", nil
+	}
+
+	contents, err := page.GetContents()
+	if err != nil {
+		return "", err
+	}
+	if contents == nil {
+		return "", nil
+	}
+
+	// Extract text items
+	extractor := &pageTextExtractor{
+		doc:       page.doc,
+		page:      page,
+		textItems: make([]textItem, 0),
+	}
+
+	_, err = extractor.extract(contents)
+	if err != nil {
+		return "", err
+	}
+
+	// Apply advanced layout algorithm
+	layout := NewAdvancedTextLayout(page.Width(), page.Height(), extractor.textItems)
+	err = layout.Coalesce()
+	if err != nil {
+		return "", err
+	}
+
+	return layout.BuildText(), nil
+}
+
+// ExtractTextWithMultiColumn extracts text with multi-column detection
+func ExtractTextWithMultiColumn(page *Page) (string, error) {
+	if page == nil {
+		return "", nil
+	}
+
+	contents, err := page.GetContents()
+	if err != nil {
+		return "", err
+	}
+	if contents == nil {
+		return "", nil
+	}
+
+	// Extract text items
+	extractor := &pageTextExtractor{
+		doc:       page.doc,
+		page:      page,
+		textItems: make([]textItem, 0),
+	}
+
+	_, err = extractor.extract(contents)
+	if err != nil {
+		return "", err
+	}
+
+	// Detect columns
+	detector := NewMultiColumnDetector(page.Width(), page.Height())
+	columnLayout := detector.DetectColumns(extractor.textItems)
+
+	return detector.BuildMultiColumnText(columnLayout), nil
 }

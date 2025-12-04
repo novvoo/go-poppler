@@ -156,6 +156,14 @@ func (fr *FontRenderer) LoadPDFFont(fontDict Dictionary, doc *Document) (*truety
 	// Check font subtype
 	subtype, _ := fontDict.GetName("Subtype")
 
+	// Handle Type1 fonts
+	if subtype == "Type1" {
+		if font, err := fr.loadType1Font(fontDict, doc); err == nil {
+			fr.fonts[fontName] = font
+			return font, nil
+		}
+	}
+
 	// Handle Type0 (Composite) fonts
 	if subtype == "Type0" {
 		if font, err := fr.loadType0Font(fontDict, doc); err == nil {
@@ -165,6 +173,14 @@ func (fr *FontRenderer) LoadPDFFont(fontDict Dictionary, doc *Document) (*truety
 	}
 
 	// Try to extract embedded font
+	if fontFile := fontDict.Get("FontFile"); fontFile != nil {
+		// Type1 font
+		if font, err := fr.loadType1EmbeddedFont(fontFile, doc, fontName); err == nil {
+			fr.fonts[fontName] = font
+			return font, nil
+		}
+	}
+
 	if fontFile := fontDict.Get("FontFile2"); fontFile != nil {
 		if font, err := fr.loadEmbeddedFont(fontFile, doc); err == nil {
 			fr.fonts[fontName] = font
@@ -455,6 +471,77 @@ func ParseFontProgram(stream Stream) ([]byte, error) {
 		// Assume TrueType
 		return data, nil
 	}
+}
+
+// loadType1Font loads a Type1 font
+func (fr *FontRenderer) loadType1Font(fontDict Dictionary, doc *Document) (*truetype.Font, error) {
+	// Try to load embedded Type1 font
+	if fontFile := fontDict.Get("FontFile"); fontFile != nil {
+		baseFontName, _ := fontDict.GetName("BaseFont")
+		return fr.loadType1EmbeddedFont(fontFile, doc, string(baseFontName))
+	}
+
+	// Try to find matching system font
+	if baseFontName, ok := fontDict.GetName("BaseFont"); ok {
+		return fr.loadSystemFontByName(string(baseFontName))
+	}
+
+	return fr.fallback, fmt.Errorf("Type1 font not found")
+}
+
+// loadType1EmbeddedFont loads an embedded Type1 font
+func (fr *FontRenderer) loadType1EmbeddedFont(fontFileRef Object, doc *Document, fontName string) (*truetype.Font, error) {
+	obj, err := doc.ResolveObject(fontFileRef)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, ok := obj.(Stream)
+	if !ok {
+		return nil, fmt.Errorf("font file is not a stream")
+	}
+
+	// Decode font data
+	fontData, err := stream.Decode()
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse Type1 font
+	parser := NewType1Parser(fontData)
+	type1Font, err := parser.Parse()
+	if err != nil {
+		// If parsing fails, try to find matching system font by name
+		if fontName != "" {
+			if sysFont, err := fr.loadSystemFontByName(fontName); err == nil {
+				return sysFont, nil
+			}
+		}
+		return nil, err
+	}
+
+	// Try to find matching TrueType font by name
+	if type1Font.Name != "" {
+		scanner := GetGlobalFontScanner()
+		if info := scanner.MatchPDFFont(type1Font.Name); info != nil {
+			fontBytes, err := os.ReadFile(info.Path)
+			if err == nil {
+				if ttf, err := truetype.Parse(fontBytes); err == nil {
+					return ttf, nil
+				}
+			}
+		}
+	}
+
+	// Fallback to system font by name
+	if fontName != "" {
+		if sysFont, err := fr.loadSystemFontByName(fontName); err == nil {
+			return sysFont, nil
+		}
+	}
+
+	// Use fallback font
+	return fr.fallback, nil
 }
 
 // ExtractFontFile extracts font file from PDF
