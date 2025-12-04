@@ -89,8 +89,20 @@ func (t *TextExtractor) ExtractPageText(pageNum int) (string, error) {
 
 // textItem represents a piece of text with position
 type textItem struct {
-	text string
-	x, y float64
+	text       string
+	x, y       float64
+	fontSize   float64
+	colorR     float64 // text color (RGB)
+	colorG     float64
+	colorB     float64
+	charPos    int     // starting character position in content stream
+	charPosEnd int     // ending character position in content stream
+	charLen    int     // length of this text item in characters
+	edge       float64 // starting edge position
+	edgeEnd    float64 // ending edge position
+	spaceAfter bool    // set if there is a space after this text item
+	underlined bool    // whether text is underlined
+	invisible  bool    // whether text is invisible (glyphless)
 }
 
 // pageTextExtractor extracts text from a single page
@@ -112,6 +124,14 @@ type pageTextExtractor struct {
 	scale     float64
 	leading   float64
 	rise      float64
+
+	// Color state (for text color tracking)
+	fillColorR float64
+	fillColorG float64
+	fillColorB float64
+
+	// Character position tracking
+	charPos int // current character position in content stream
 
 	// Graphics state stack
 	stateStack []textGraphicsState
@@ -368,6 +388,42 @@ func (p *pageTextExtractor) processOperation(op Operation) {
 				p.showText(s.Value)
 			}
 		}
+
+	case "rg": // Set RGB fill color (for text)
+		if len(op.Operands) >= 3 {
+			p.fillColorR = objectToFloat(op.Operands[0])
+			p.fillColorG = objectToFloat(op.Operands[1])
+			p.fillColorB = objectToFloat(op.Operands[2])
+		}
+
+	case "RG": // Set RGB stroke color
+		// For now, we track fill color only
+
+	case "g": // Set gray fill color
+		if len(op.Operands) >= 1 {
+			gray := objectToFloat(op.Operands[0])
+			p.fillColorR = gray
+			p.fillColorG = gray
+			p.fillColorB = gray
+		}
+
+	case "G": // Set gray stroke color
+		// Similar to RG, track if needed
+
+	case "k": // Set CMYK fill color
+		if len(op.Operands) >= 4 {
+			// Convert CMYK to RGB (simplified conversion)
+			c := objectToFloat(op.Operands[0])
+			m := objectToFloat(op.Operands[1])
+			y := objectToFloat(op.Operands[2])
+			k := objectToFloat(op.Operands[3])
+			p.fillColorR = (1 - c) * (1 - k)
+			p.fillColorG = (1 - m) * (1 - k)
+			p.fillColorB = (1 - y) * (1 - k)
+		}
+
+	case "K": // Set CMYK stroke color
+		// Similar to RG, track if needed
 	}
 }
 
@@ -565,13 +621,10 @@ func (p *pageTextExtractor) showText(data []byte) {
 	x := p.ctm[0]*tmX + p.ctm[2]*tmY + p.ctm[4]
 	y := p.ctm[1]*tmX + p.ctm[3]*tmY + p.ctm[5]
 
-	p.textItems = append(p.textItems, textItem{
-		text: text,
-		x:    x,
-		y:    y,
-	})
+	// Calculate character length
+	charLen := len([]rune(text))
 
-	// Update text matrix with better width estimation
+	// Calculate text width for edge positions
 	width := p.estimateTextWidth(text)
 
 	// Add character spacing
@@ -582,6 +635,34 @@ func (p *pageTextExtractor) showText(data []byte) {
 	spaceCount := float64(strings.Count(text, " "))
 	width += p.wordSpace * spaceCount * p.scale / 100
 
+	// Calculate edge and edgeEnd based on text direction
+	edge := x
+	edgeEnd := x + width
+
+	// Check if there should be a space after this text
+	// (will be refined in buildText based on gap analysis)
+	spaceAfter := strings.HasSuffix(text, " ")
+
+	p.textItems = append(p.textItems, textItem{
+		text:       text,
+		x:          x,
+		y:          y,
+		fontSize:   p.fontSize,
+		colorR:     p.fillColorR,
+		colorG:     p.fillColorG,
+		colorB:     p.fillColorB,
+		charPos:    p.charPos,
+		charPosEnd: p.charPos + charLen,
+		charLen:    charLen,
+		edge:       edge,
+		edgeEnd:    edgeEnd,
+		spaceAfter: spaceAfter,
+	})
+
+	// Update character position
+	p.charPos += charLen
+
+	// Update text matrix
 	p.tm[4] += width
 }
 
@@ -682,48 +763,53 @@ func (p *pageTextExtractor) buildText() string {
 			return line.items[i].x < line.items[j].x
 		})
 
-		// Build line text with proper spacing
+		// Build line text with proper spacing using spaceAfter and edgeEnd
 		for itemIdx, item := range line.items {
 			if itemIdx > 0 {
 				prevItem := line.items[itemIdx-1]
-				// Estimate text width more accurately
-				prevWidth := p.estimateTextWidth(prevItem.text)
-				gap := item.x - (prevItem.x + prevWidth)
 
-				// Determine if we need a space based on gap and character types
-				avgCharWidth := p.fontSize * 0.5
-				if avgCharWidth == 0 {
-					avgCharWidth = 6 // fallback
-				}
-
-				// Check if texts should be merged or separated
-				prevText := prevItem.text
-				currText := item.text
-
-				// If gap is negative or very small, merge without space
-				if gap < avgCharWidth*0.05 {
-					// Direct merge - no space
-				} else if gap > avgCharWidth*0.2 {
-					// Large gap - definitely add space
-					if !strings.HasSuffix(prevText, " ") && !strings.HasPrefix(currText, " ") {
-						buf.WriteString(" ")
-					}
+				// Use spaceAfter flag if set
+				if prevItem.spaceAfter {
+					buf.WriteString(" ")
 				} else {
-					// Small gap - check character types
-					// Add space if transitioning between different character types
-					// or if previous ends with letter and current starts with letter
-					if len(prevText) > 0 && len(currText) > 0 {
-						lastChar := []rune(strings.TrimSpace(prevText))
-						firstChar := []rune(strings.TrimSpace(currText))
-						if len(lastChar) > 0 && len(firstChar) > 0 {
-							last := lastChar[len(lastChar)-1]
-							first := firstChar[0]
+					// Calculate gap using edgeEnd for more accurate spacing
+					gap := item.edge - prevItem.edgeEnd
 
-							// Add space between letters
-							if (last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') {
-								if (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') {
-									if !strings.HasSuffix(prevText, " ") {
-										buf.WriteString(" ")
+					// Determine if we need a space based on gap and character types
+					avgCharWidth := prevItem.fontSize * 0.5
+					if avgCharWidth == 0 {
+						avgCharWidth = 6 // fallback
+					}
+
+					// Check if texts should be merged or separated
+					prevText := prevItem.text
+					currText := item.text
+
+					// If gap is negative or very small, merge without space
+					if gap < avgCharWidth*0.05 {
+						// Direct merge - no space
+					} else if gap > avgCharWidth*0.2 {
+						// Large gap - definitely add space
+						if !strings.HasSuffix(prevText, " ") && !strings.HasPrefix(currText, " ") {
+							buf.WriteString(" ")
+						}
+					} else {
+						// Small gap - check character types
+						// Add space if transitioning between different character types
+						// or if previous ends with letter and current starts with letter
+						if len(prevText) > 0 && len(currText) > 0 {
+							lastChar := []rune(strings.TrimSpace(prevText))
+							firstChar := []rune(strings.TrimSpace(currText))
+							if len(lastChar) > 0 && len(firstChar) > 0 {
+								last := lastChar[len(lastChar)-1]
+								first := firstChar[0]
+
+								// Add space between letters
+								if (last >= 'a' && last <= 'z') || (last >= 'A' && last <= 'Z') {
+									if (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') {
+										if !strings.HasSuffix(prevText, " ") {
+											buf.WriteString(" ")
+										}
 									}
 								}
 							}
@@ -913,11 +999,22 @@ func NewDebugTextExtractor(doc *Document, page *Page) *DebugTextExtractor {
 
 // textItemWithFont represents a piece of text with position and font information
 type textItemWithFont struct {
-	text     string
-	x, y     float64
-	fontSize float64
-	font     *Font
-	fontDict Dictionary
+	text       string
+	x, y       float64
+	fontSize   float64
+	font       *Font
+	fontDict   Dictionary
+	charPos    int     // starting character position in content stream
+	charPosEnd int     // ending character position in content stream
+	charLen    int     // length of this text item in characters
+	edge       float64 // starting edge position
+	edgeEnd    float64 // ending edge position
+	spaceAfter bool    // set if there is a space after this text item
+	colorR     float64 // text color (RGB)
+	colorG     float64
+	colorB     float64
+	underlined bool // whether text is underlined
+	invisible  bool // whether text is invisible (glyphless)
 }
 
 // textLineWithFont represents a line of text items with font info
@@ -945,6 +1042,14 @@ type pageTextExtractorWithFont struct {
 	scale     float64
 	leading   float64
 	rise      float64
+
+	// Color state (for text color tracking)
+	fillColorR float64
+	fillColorG float64
+	fillColorB float64
+
+	// Character position tracking
+	charPos int // current character position in content stream
 }
 
 func (p *pageTextExtractorWithFont) extract(contents []byte) (string, error) {
@@ -1149,6 +1254,43 @@ func (p *pageTextExtractorWithFont) processOperation(op Operation) {
 				p.showText(s.Value)
 			}
 		}
+
+	case "rg": // Set RGB fill color (for text)
+		if len(op.Operands) >= 3 {
+			p.fillColorR = objectToFloat(op.Operands[0])
+			p.fillColorG = objectToFloat(op.Operands[1])
+			p.fillColorB = objectToFloat(op.Operands[2])
+		}
+
+	case "RG": // Set RGB stroke color
+		// For now, we track fill color only, but this could be extended
+		// if stroke color is needed for text rendering
+
+	case "g": // Set gray fill color
+		if len(op.Operands) >= 1 {
+			gray := objectToFloat(op.Operands[0])
+			p.fillColorR = gray
+			p.fillColorG = gray
+			p.fillColorB = gray
+		}
+
+	case "G": // Set gray stroke color
+		// Similar to RG, track if needed
+
+	case "k": // Set CMYK fill color
+		if len(op.Operands) >= 4 {
+			// Convert CMYK to RGB (simplified conversion)
+			c := objectToFloat(op.Operands[0])
+			m := objectToFloat(op.Operands[1])
+			y := objectToFloat(op.Operands[2])
+			k := objectToFloat(op.Operands[3])
+			p.fillColorR = (1 - c) * (1 - k)
+			p.fillColorG = (1 - m) * (1 - k)
+			p.fillColorB = (1 - y) * (1 - k)
+		}
+
+	case "K": // Set CMYK stroke color
+		// Similar to RG, track if needed
 	}
 }
 
@@ -1240,26 +1382,49 @@ func (p *pageTextExtractorWithFont) showText(data []byte) {
 	x := p.tm[4]
 	y := p.tm[5]
 
-	p.textItems = append(p.textItems, textItemWithFont{
-		text:     text,
-		x:        x,
-		y:        y,
-		fontSize: p.fontSize,
-		font:     p.font,
-		fontDict: p.fontDict,
-	})
+	// Calculate character length
+	charLen := len([]rune(text))
 
-	// Update text matrix with better width estimation
+	// Estimate text width for edge positions
 	width := p.estimateTextWidth(text, p.fontSize)
 
 	// Add character spacing
-	charCount := float64(len([]rune(text)))
+	charCount := float64(charLen)
 	width += p.charSpace * charCount * p.scale / 100
 
-	// Add word spacing for spaces
+	// Add word spacing (count spaces in text)
 	spaceCount := float64(strings.Count(text, " "))
 	width += p.wordSpace * spaceCount * p.scale / 100
 
+	// Calculate edge and edgeEnd
+	edge := x
+	edgeEnd := x + width
+
+	// Check if there should be a space after this text
+	spaceAfter := strings.HasSuffix(text, " ")
+
+	p.textItems = append(p.textItems, textItemWithFont{
+		text:       text,
+		x:          x,
+		y:          y,
+		fontSize:   p.fontSize,
+		font:       p.font,
+		fontDict:   p.fontDict,
+		charPos:    p.charPos,
+		charPosEnd: p.charPos + charLen,
+		charLen:    charLen,
+		edge:       edge,
+		edgeEnd:    edgeEnd,
+		spaceAfter: spaceAfter,
+		colorR:     p.fillColorR,
+		colorG:     p.fillColorG,
+		colorB:     p.fillColorB,
+	})
+
+	// Update character position
+	p.charPos += charLen
+
+	// Update text matrix
 	p.tm[4] += width
 }
 
@@ -1336,18 +1501,23 @@ func (p *pageTextExtractorWithFont) buildText() string {
 			return line.items[i].x < line.items[j].x
 		})
 
-		// Build line text with proper spacing
+		// Build line text with proper spacing using spaceAfter and edgeEnd
 		for itemIdx, item := range line.items {
 			if itemIdx > 0 {
 				prevItem := line.items[itemIdx-1]
-				// Estimate text width more accurately
-				prevWidth := p.estimateTextWidth(prevItem.text, prevItem.fontSize)
-				gap := item.x - (prevItem.x + prevWidth)
 
-				// Add space if gap is significant (more than 1/4 of average char width)
-				avgCharWidth := prevItem.fontSize * 0.5
-				if gap > avgCharWidth*0.25 {
+				// Use spaceAfter flag if set
+				if prevItem.spaceAfter {
 					buf.WriteString(" ")
+				} else {
+					// Calculate gap using edgeEnd for more accurate spacing
+					gap := item.edge - prevItem.edgeEnd
+
+					// Add space if gap is significant (more than 1/4 of average char width)
+					avgCharWidth := prevItem.fontSize * 0.5
+					if gap > avgCharWidth*0.25 {
+						buf.WriteString(" ")
+					}
 				}
 			}
 			buf.WriteString(item.text)
@@ -2184,8 +2354,14 @@ type PopplerTextOutputDev struct {
 	pageWidth  float64
 	pageHeight float64
 
+	// 颜色状态（用于 TEXTOUT_WORD_LIST 模式）
+	fillColorR float64
+	fillColorG float64
+	fillColorB float64
+
 	// 控制标志
 	rawOrder        bool
+	discardDiag     bool // discard diagonal text
 	lastCharOverlap bool
 	nest            int
 	nTinyChars      int
@@ -2198,6 +2374,22 @@ type PopplerTextOutputDev struct {
 	dupMaxPriDelta     float64
 	dupMaxSecDelta     float64
 	minWordBreakSpace  float64
+
+	// Text flows and blocks (after coalesce)
+	flows   *TextFlow            // text flows
+	blocks  []*AdvancedTextBlock // blocks array
+	nBlocks int                  // number of blocks
+
+	// Underlines and links
+	underlines []TextUnderline // underlines
+	links      []TextLink      // hyperlinks
+
+	// Search state
+	searchString []rune // search string
+	searchLen    int    // search length
+
+	// Reference counting
+	refCnt int // reference count
 }
 
 // PopplerTextFontInfo 字体信息（对应 Poppler 的 TextFontInfo）
@@ -2217,6 +2409,22 @@ type PopplerCharInfo struct {
 	textMat  [6]float64
 }
 
+// TextUnderline represents an underline (对应 Poppler 的 TextUnderline)
+type TextUnderline struct {
+	x0, y0 float64 // start point
+	x1, y1 float64 // end point
+	color  struct {
+		r, g, b float64
+	}
+}
+
+// TextLink represents a hyperlink (对应 Poppler 的 TextLink)
+type TextLink struct {
+	xMin, yMin float64 // bounding box
+	xMax, yMax float64
+	link       interface{} // AnnotLink - use interface{} for now
+}
+
 // PopplerTextWord 单词（对应 Poppler 的 TextWord）
 type PopplerTextWord struct {
 	chars    []PopplerCharInfo
@@ -2229,6 +2437,23 @@ type PopplerTextWord struct {
 	rot      int // 旋转：0, 1, 2, 3
 	wMode    int // 书写模式
 	next     *PopplerTextWord
+
+	// Additional fields from Poppler
+	charPosEnd int     // ending character position
+	edgeEnd    float64 // ending edge position
+
+	// State flags
+	spaceAfter bool // set if there is a space between this word and the next
+	underlined bool // set if word is underlined
+	invisible  bool // whether we are invisible (glyphless)
+
+	// Color information (for TEXTOUT_WORD_LIST mode)
+	colorR float64 // word color
+	colorG float64
+	colorB float64
+
+	// Link information
+	link interface{} // hyperlink (AnnotLink) - use interface{} for now
 }
 
 // PopplerTextPool 文本池（对应 Poppler 的 TextPool）
@@ -2406,6 +2631,11 @@ func (dev *PopplerTextOutputDev) BeginWord(state *TextGraphicsState, x, y float6
 		yMin:     y,
 		yMax:     y,
 		base:     y,
+		// 设置颜色信息（用于 TEXTOUT_WORD_LIST 模式）
+		// 颜色从 PopplerTextOutputDev 的当前填充颜色获取
+		colorR: dev.fillColorR,
+		colorG: dev.fillColorG,
+		colorB: dev.fillColorB,
 	}
 
 	if dev.curFont != nil {
@@ -2469,6 +2699,10 @@ func (w *PopplerTextWord) AddChar(state *TextGraphicsState, font *PopplerTextFon
 		font:     font,
 		textMat:  textMat,
 	})
+
+	// 更新 charPosEnd 和 edgeEnd
+	w.charPosEnd = charPos + 1
+	w.edgeEnd = edge
 
 	// 更新边界框
 	if x < w.xMin {
@@ -2573,28 +2807,120 @@ func (dev *PopplerTextOutputDev) BuildText() string {
 		return allWords[i].xMin < allWords[j].xMin
 	})
 
-	// 构建文本
+	// 构建文本，使用 spaceAfter 来决定是否添加空格
 	var result string
 	var lastBase float64
 	firstWord := true
 
-	for _, word := range allWords {
+	for wordIdx, word := range allWords {
 		// 检查是否需要换行
 		if !firstWord && math.Abs(word.base-lastBase) > 2 {
 			result += "\n"
 		}
 
-		// 添加单词文本
+		// 添加单词文本（使用 charPos 到 charPosEnd 范围）
 		for _, char := range word.chars {
 			result += string(char.unicode)
 		}
-		result += " "
+
+		// 使用 spaceAfter 来决定是否添加空格
+		if word.spaceAfter && wordIdx < len(allWords)-1 {
+			// 检查下一个单词是否在同一行
+			if wordIdx+1 < len(allWords) {
+				nextWord := allWords[wordIdx+1]
+				if math.Abs(word.base-nextWord.base) <= 2 {
+					result += " "
+				}
+			}
+		}
 
 		lastBase = word.base
 		firstWord = false
 	}
 
 	return result
+}
+
+// BuildTextWithColor 构建带颜色信息的文本（TEXTOUT_WORD_LIST 模式）
+func (dev *PopplerTextOutputDev) BuildTextWithColor() []WordWithColor {
+	// 确保最后的单词被添加
+	dev.EndWord()
+
+	// 收集所有单词
+	var allWords []*PopplerTextWord
+
+	if dev.rawOrder {
+		// 原始顺序
+		for word := dev.rawWords; word != nil; word = word.next {
+			allWords = append(allWords, word)
+		}
+	} else {
+		// 从池中收集
+		for rot := range 4 {
+			pool := dev.pools[rot]
+			for baseIdx := pool.minBaseIdx; baseIdx <= pool.maxBaseIdx; baseIdx++ {
+				for word := pool.GetPool(baseIdx); word != nil; word = word.next {
+					allWords = append(allWords, word)
+				}
+			}
+		}
+	}
+
+	// 按 Y 坐标排序（从上到下）
+	sort.Slice(allWords, func(i, j int) bool {
+		// 使用基线排序
+		if math.Abs(allWords[i].base-allWords[j].base) > 2 {
+			return allWords[i].base > allWords[j].base
+		}
+		// 同一行内按 X 坐标排序
+		return allWords[i].xMin < allWords[j].xMin
+	})
+
+	// 构建带颜色信息的单词列表
+	var result []WordWithColor
+
+	for _, word := range allWords {
+		// 构建单词文本
+		var text string
+		for _, char := range word.chars {
+			text += string(char.unicode)
+		}
+
+		// 添加到结果（使用 charPos 到 charPosEnd 范围和颜色信息）
+		result = append(result, WordWithColor{
+			Text:       text,
+			X:          word.xMin,
+			Y:          word.base,
+			Width:      word.xMax - word.xMin,
+			Height:     word.yMax - word.yMin,
+			FontSize:   word.fontSize,
+			ColorR:     word.colorR,
+			ColorG:     word.colorG,
+			ColorB:     word.colorB,
+			CharPos:    word.chars[0].charPos,
+			CharPosEnd: word.charPosEnd,
+			EdgeEnd:    word.edgeEnd,
+			SpaceAfter: word.spaceAfter,
+		})
+	}
+
+	return result
+}
+
+// WordWithColor 带颜色信息的单词（用于 TEXTOUT_WORD_LIST 模式）
+type WordWithColor struct {
+	Text       string
+	X, Y       float64
+	Width      float64
+	Height     float64
+	FontSize   float64
+	ColorR     float64
+	ColorG     float64
+	ColorB     float64
+	CharPos    int
+	CharPosEnd int
+	EdgeEnd    float64
+	SpaceAfter bool
 }
 
 // ============================================================================
@@ -2969,6 +3295,33 @@ type AdvancedTextBlock struct {
 	nLines   int
 	col      int
 	nColumns int
+
+	// Additional fields from Poppler
+	rot    int     // text rotation (0, 1, 2, 3)
+	priMin float64 // whitespace bounding box along primary axis (min)
+	priMax float64 // whitespace bounding box along primary axis (max)
+
+	// Extended bounding box
+	ExMin float64 // extended bounding box x coordinates
+	ExMax float64
+	EyMin float64 // extended bounding box y coordinates
+	EyMax float64
+
+	// Table information
+	tableId  int  // id of table to which this block belongs
+	tableEnd bool // is this block at end of line of actual table
+
+	// Text content
+	pool      *PopplerTextPool // pool of words (used only until lines are built)
+	curLine   *TextLine        // most recently added line
+	charCount int              // number of characters in the block
+
+	// Linked list pointers
+	next      *AdvancedTextBlock // next block in list
+	stackNext *AdvancedTextBlock // next block in stack
+
+	// Parent reference
+	page interface{} // parent page (TextPage) - use interface{} for now
 }
 
 // TextLine represents a line of text (like Poppler's TextLine)
@@ -2980,6 +3333,25 @@ type TextLine struct {
 	base     float64
 	words    []*TextWord
 	lastWord *TextWord
+
+	// Additional fields from Poppler
+	rot          int       // text rotation (0, 1, 2, 3)
+	text         []rune    // Unicode text of the line (including spaces between words)
+	edge         []float64 // "near" edge x or y coord of each char
+	col          []int     // starting column number of each Unicode char
+	len          int       // number of Unicode chars
+	convertedLen int       // total number of converted characters
+	hyphenated   bool      // set if last char is a hyphen
+
+	// Normalized text (for search and comparison)
+	normalized    []rune // normalized form of Unicode text
+	normalizedLen int    // number of normalized Unicode chars
+	normalizedIdx []int  // indices of normalized chars into Unicode text
+
+	// ASCII translation
+	asciiTranslation []rune // ascii translation from the normalized text
+	asciiLen         int    // length of ascii translation text
+	asciiIdx         []int  // indices of ascii chars into Unicode text of line
 }
 
 // TextWord represents a word (like Poppler's TextWord)
@@ -2992,6 +3364,25 @@ type TextWord struct {
 	fontSize float64
 	text     string
 	next     *TextWord
+
+	// Additional fields from Poppler
+	rot        int     // rotation, multiple of 90 degrees (0, 1, 2, or 3)
+	wMode      int     // horizontal (0) or vertical (1) writing mode
+	charPosEnd int     // ending character position
+	edgeEnd    float64 // ending edge position
+
+	// State flags
+	spaceAfter bool // set if there is a space between this word and the next
+	underlined bool // set if word is underlined
+	invisible  bool // whether we are invisible (glyphless)
+
+	// Color information (for TEXTOUT_WORD_LIST mode)
+	colorR float64 // word color
+	colorG float64
+	colorB float64
+
+	// Link information
+	link interface{} // hyperlink (AnnotLink) - use interface{} for now
 }
 
 // TextFlow represents a flow of text blocks (like Poppler's TextFlow)
@@ -3001,6 +3392,15 @@ type TextFlow struct {
 	yMin   float64
 	yMax   float64
 	blocks []*AdvancedTextBlock
+
+	// Additional fields from Poppler
+	priMin  float64            // whitespace bounding box along primary axis (min)
+	priMax  float64            // whitespace bounding box along primary axis (max)
+	lastBlk *AdvancedTextBlock // last block in this flow
+	next    *TextFlow          // next flow in linked list
+
+	// Parent reference
+	page interface{} // parent page (TextPage) - use interface{} for now
 }
 
 // NewAdvancedTextLayout creates a new advanced text layout processor
@@ -3067,44 +3467,77 @@ func (atl *AdvancedTextLayout) groupIntoWords() []*TextWord {
 		return sortedItems[i].x < sortedItems[j].x
 	})
 
-	for _, item := range sortedItems {
+	for i, item := range sortedItems {
 		if currentWord == nil {
 			// Start new word
+			estimatedWidth := atl.estimateWidth(item.text)
 			currentWord = &TextWord{
-				text:     item.text,
-				xMin:     item.x,
-				xMax:     item.x + atl.estimateWidth(item.text),
-				yMin:     item.y - 10,
-				yMax:     item.y + 2,
-				base:     item.y,
-				fontSize: 12,
+				text:       item.text,
+				xMin:       item.x,
+				xMax:       item.x + estimatedWidth,
+				yMin:       item.y - 10,
+				yMax:       item.y + 2,
+				base:       item.y,
+				fontSize:   item.fontSize,
+				colorR:     item.colorR,
+				colorG:     item.colorG,
+				colorB:     item.colorB,
+				charPosEnd: item.charPos + item.charLen,
+				edgeEnd:    item.x + estimatedWidth,
+				underlined: item.underlined,
+				invisible:  item.invisible,
 			}
 		} else {
 			// Check if should merge with current word
 			gap := item.x - currentWord.xMax
 
 			if gap < 0 || gap > currentWord.fontSize*0.3 || math.Abs(item.y-currentWord.base) > 2 {
+				// Check if there's a space after current word (before starting new word)
+				if i > 0 && gap > 0 && gap <= currentWord.fontSize*0.5 {
+					currentWord.spaceAfter = true
+				}
+
 				// Start new word
 				words = append(words, currentWord)
+				estimatedWidth := atl.estimateWidth(item.text)
 				currentWord = &TextWord{
-					text:     item.text,
-					xMin:     item.x,
-					xMax:     item.x + atl.estimateWidth(item.text),
-					yMin:     item.y - 10,
-					yMax:     item.y + 2,
-					base:     item.y,
-					fontSize: 12,
+					text:       item.text,
+					xMin:       item.x,
+					xMax:       item.x + estimatedWidth,
+					yMin:       item.y - 10,
+					yMax:       item.y + 2,
+					base:       item.y,
+					fontSize:   item.fontSize,
+					colorR:     item.colorR,
+					colorG:     item.colorG,
+					colorB:     item.colorB,
+					charPosEnd: item.charPos + item.charLen,
+					edgeEnd:    item.x + estimatedWidth,
+					underlined: item.underlined,
+					invisible:  item.invisible,
 				}
 			} else {
 				// Merge with current word
 				currentWord.text += item.text
-				currentWord.xMax = item.x + atl.estimateWidth(item.text)
+				estimatedWidth := atl.estimateWidth(item.text)
+				currentWord.xMax = item.x + estimatedWidth
+				currentWord.edgeEnd = item.x + estimatedWidth
+				currentWord.charPosEnd = item.charPos + item.charLen
 			}
 		}
 	}
 
 	if currentWord != nil {
 		words = append(words, currentWord)
+	}
+
+	// Set spaceAfter for words based on gaps between consecutive words
+	for i := 0; i < len(words)-1; i++ {
+		gap := words[i+1].xMin - words[i].xMax
+		// If gap is reasonable (not too large), mark as space
+		if gap > 0 && gap <= words[i].fontSize*0.5 && math.Abs(words[i].base-words[i+1].base) < 2 {
+			words[i].spaceAfter = true
+		}
 	}
 
 	return words
@@ -3466,4 +3899,934 @@ func ExtractTextWithMultiColumn(page *Page) (string, error) {
 	columnLayout := detector.DetectColumns(extractor.textItems)
 
 	return detector.BuildMultiColumnText(columnLayout), nil
+}
+
+// ============================================================================
+// TextWord Methods - 参考 Poppler 的 TextWord 方法
+// ============================================================================
+
+// PrimaryCmp compares two words based on primary axis (参考 Poppler 的 primaryCmp)
+func (w *TextWord) PrimaryCmp(other *TextWord) int {
+	if other == nil {
+		return 1
+	}
+
+	switch w.rot {
+	case 0: // horizontal, left-to-right
+		if w.xMin < other.xMin {
+			return -1
+		} else if w.xMin > other.xMin {
+			return 1
+		}
+	case 1: // vertical, top-to-bottom
+		if w.yMin < other.yMin {
+			return -1
+		} else if w.yMin > other.yMin {
+			return 1
+		}
+	case 2: // horizontal, right-to-left
+		if w.xMax > other.xMax {
+			return -1
+		} else if w.xMax < other.xMax {
+			return 1
+		}
+	case 3: // vertical, bottom-to-top
+		if w.yMax > other.yMax {
+			return -1
+		} else if w.yMax < other.yMax {
+			return 1
+		}
+	}
+	return 0
+}
+
+// PrimaryDelta returns distance along primary axis (参考 Poppler 的 primaryDelta)
+func (w *TextWord) PrimaryDelta(other *TextWord) float64 {
+	if other == nil {
+		return 0
+	}
+
+	switch w.rot {
+	case 0:
+		return other.xMin - w.xMax
+	case 1:
+		return other.yMin - w.yMax
+	case 2:
+		return w.xMin - other.xMax
+	case 3:
+		return w.yMax - other.yMin
+	}
+	return 0
+}
+
+// IsUnderlined returns whether the word is underlined
+func (w *TextWord) IsUnderlined() bool {
+	return w.underlined
+}
+
+// HasSpaceAfter returns whether there is a space after this word
+func (w *TextWord) HasSpaceAfter() bool {
+	return w.spaceAfter
+}
+
+// GetLink returns the hyperlink associated with this word
+func (w *TextWord) GetLink() interface{} {
+	return w.link
+}
+
+// GetColor returns the word color
+func (w *TextWord) GetColor() (r, g, b float64) {
+	return w.colorR, w.colorG, w.colorB
+}
+
+// SetColor sets the word color
+func (w *TextWord) SetColor(r, g, b float64) {
+	w.colorR = r
+	w.colorG = g
+	w.colorB = b
+}
+
+// ============================================================================
+// TextLine Methods - 参考 Poppler 的 TextLine 方法
+// ============================================================================
+
+// PrimaryDelta returns distance along primary axis (参考 Poppler 的 primaryDelta)
+func (l *TextLine) PrimaryDelta(other *TextLine) float64 {
+	if other == nil {
+		return 0
+	}
+
+	switch l.rot {
+	case 0:
+		return other.xMin - l.xMax
+	case 1:
+		return other.yMin - l.yMax
+	case 2:
+		return l.xMin - other.xMax
+	case 3:
+		return l.yMax - other.yMin
+	}
+	return 0
+}
+
+// PrimaryCmp compares two lines based on primary axis (参考 Poppler 的 primaryCmp)
+func (l *TextLine) PrimaryCmp(other *TextLine) int {
+	if other == nil {
+		return 1
+	}
+
+	switch l.rot {
+	case 0:
+		if l.xMin < other.xMin {
+			return -1
+		} else if l.xMin > other.xMin {
+			return 1
+		}
+	case 1:
+		if l.yMin < other.yMin {
+			return -1
+		} else if l.yMin > other.yMin {
+			return 1
+		}
+	case 2:
+		if l.xMax > other.xMax {
+			return -1
+		} else if l.xMax < other.xMax {
+			return 1
+		}
+	case 3:
+		if l.yMax > other.yMax {
+			return -1
+		} else if l.yMax < other.yMax {
+			return 1
+		}
+	}
+	return 0
+}
+
+// SecondaryCmp compares two lines based on secondary axis (参考 Poppler 的 secondaryCmp)
+func (l *TextLine) SecondaryCmp(other *TextLine) int {
+	if other == nil {
+		return 1
+	}
+
+	switch l.rot {
+	case 0, 2: // horizontal
+		if l.base < other.base {
+			return -1
+		} else if l.base > other.base {
+			return 1
+		}
+	case 1, 3: // vertical
+		if l.base < other.base {
+			return -1
+		} else if l.base > other.base {
+			return 1
+		}
+	}
+	return 0
+}
+
+// IsHyphenated returns whether the line ends with a hyphen
+func (l *TextLine) IsHyphenated() bool {
+	return l.hyphenated
+}
+
+// AddWord adds a word to the line
+func (l *TextLine) AddWord(word *TextWord) {
+	if word == nil {
+		return
+	}
+
+	l.words = append(l.words, word)
+	l.lastWord = word
+
+	// Update bounding box
+	if len(l.words) == 1 {
+		l.xMin = word.xMin
+		l.xMax = word.xMax
+		l.yMin = word.yMin
+		l.yMax = word.yMax
+		l.base = word.base
+	} else {
+		if word.xMin < l.xMin {
+			l.xMin = word.xMin
+		}
+		if word.xMax > l.xMax {
+			l.xMax = word.xMax
+		}
+		if word.yMin < l.yMin {
+			l.yMin = word.yMin
+		}
+		if word.yMax > l.yMax {
+			l.yMax = word.yMax
+		}
+	}
+}
+
+// ============================================================================
+// TextBlock Methods - 参考 Poppler 的 TextBlock 方法
+// ============================================================================
+
+// PrimaryCmp compares two blocks based on primary axis (参考 Poppler 的 primaryCmp)
+func (b *AdvancedTextBlock) PrimaryCmp(other *AdvancedTextBlock) int {
+	if other == nil {
+		return 1
+	}
+
+	switch b.rot {
+	case 0:
+		if b.xMin < other.xMin {
+			return -1
+		} else if b.xMin > other.xMin {
+			return 1
+		}
+	case 1:
+		if b.yMin < other.yMin {
+			return -1
+		} else if b.yMin > other.yMin {
+			return 1
+		}
+	case 2:
+		if b.xMax > other.xMax {
+			return -1
+		} else if b.xMax < other.xMax {
+			return 1
+		}
+	case 3:
+		if b.yMax > other.yMax {
+			return -1
+		} else if b.yMax < other.yMax {
+			return 1
+		}
+	}
+	return 0
+}
+
+// SecondaryDelta returns distance along secondary axis (参考 Poppler 的 secondaryDelta)
+func (b *AdvancedTextBlock) SecondaryDelta(other *AdvancedTextBlock) float64 {
+	if other == nil {
+		return 0
+	}
+
+	switch b.rot {
+	case 0, 2: // horizontal
+		return math.Abs(b.base() - other.base())
+	case 1, 3: // vertical
+		return math.Abs(b.base() - other.base())
+	}
+	return 0
+}
+
+// base returns the baseline of the block
+func (b *AdvancedTextBlock) base() float64 {
+	if len(b.lines) == 0 {
+		return 0
+	}
+	return b.lines[0].base
+}
+
+// IsBelow returns true if this block is below the other block (参考 Poppler 的 isBelow)
+func (b *AdvancedTextBlock) IsBelow(other *AdvancedTextBlock) bool {
+	if other == nil {
+		return false
+	}
+
+	switch b.rot {
+	case 0, 2: // horizontal
+		return b.yMin > other.yMax
+	case 1, 3: // vertical
+		return b.xMin > other.xMax
+	}
+	return false
+}
+
+// UpdatePriMinMax updates primary axis bounds (参考 Poppler 的 updatePriMinMax)
+func (b *AdvancedTextBlock) UpdatePriMinMax(other *AdvancedTextBlock) {
+	if other == nil {
+		return
+	}
+
+	switch b.rot {
+	case 0, 2: // horizontal
+		if other.xMin < b.priMin {
+			b.priMin = other.xMin
+		}
+		if other.xMax > b.priMax {
+			b.priMax = other.xMax
+		}
+	case 1, 3: // vertical
+		if other.yMin < b.priMin {
+			b.priMin = other.yMin
+		}
+		if other.yMax > b.priMax {
+			b.priMax = other.yMax
+		}
+	}
+}
+
+// AddWord adds a word to the block
+func (b *AdvancedTextBlock) AddWord(word *TextWord) {
+	if word == nil {
+		return
+	}
+
+	// If no current line or word doesn't fit, create new line
+	if b.curLine == nil {
+		b.curLine = &TextLine{
+			rot:   b.rot,
+			words: make([]*TextWord, 0),
+		}
+		b.lines = append(b.lines, b.curLine)
+		b.nLines++
+	}
+
+	b.curLine.AddWord(word)
+	b.charCount += len(word.text)
+
+	// Update bounding box
+	if b.nLines == 1 && len(b.curLine.words) == 1 {
+		b.xMin = word.xMin
+		b.xMax = word.xMax
+		b.yMin = word.yMin
+		b.yMax = word.yMax
+	} else {
+		if word.xMin < b.xMin {
+			b.xMin = word.xMin
+		}
+		if word.xMax > b.xMax {
+			b.xMax = word.xMax
+		}
+		if word.yMin < b.yMin {
+			b.yMin = word.yMin
+		}
+		if word.yMax > b.yMax {
+			b.yMax = word.yMax
+		}
+	}
+}
+
+// GetBBox returns the bounding box
+func (b *AdvancedTextBlock) GetBBox() (xMin, yMin, xMax, yMax float64) {
+	return b.xMin, b.yMin, b.xMax, b.yMax
+}
+
+// GetLineCount returns the number of lines
+func (b *AdvancedTextBlock) GetLineCount() int {
+	return b.nLines
+}
+
+// ============================================================================
+// TextFlow Methods - 参考 Poppler 的 TextFlow 方法
+// ============================================================================
+
+// AddBlock adds a block to the end of this flow
+func (f *TextFlow) AddBlock(blk *AdvancedTextBlock) {
+	if blk == nil {
+		return
+	}
+
+	f.blocks = append(f.blocks, blk)
+	f.lastBlk = blk
+
+	// Update bounding box
+	if len(f.blocks) == 1 {
+		f.xMin = blk.xMin
+		f.xMax = blk.xMax
+		f.yMin = blk.yMin
+		f.yMax = blk.yMax
+		f.priMin = blk.priMin
+		f.priMax = blk.priMax
+	} else {
+		if blk.xMin < f.xMin {
+			f.xMin = blk.xMin
+		}
+		if blk.xMax > f.xMax {
+			f.xMax = blk.xMax
+		}
+		if blk.yMin < f.yMin {
+			f.yMin = blk.yMin
+		}
+		if blk.yMax > f.yMax {
+			f.yMax = blk.yMax
+		}
+		if blk.priMin < f.priMin {
+			f.priMin = blk.priMin
+		}
+		if blk.priMax > f.priMax {
+			f.priMax = blk.priMax
+		}
+	}
+}
+
+// BlockFits checks if a block fits in this flow (参考 Poppler 的 blockFits)
+func (f *TextFlow) BlockFits(blk, prevBlk *AdvancedTextBlock) bool {
+	if blk == nil {
+		return false
+	}
+
+	// Check if block uses a font no larger than previous block
+	if prevBlk != nil && len(blk.lines) > 0 && len(prevBlk.lines) > 0 {
+		if len(blk.lines[0].words) > 0 && len(prevBlk.lines[0].words) > 0 {
+			if blk.lines[0].words[0].fontSize > prevBlk.lines[0].words[0].fontSize {
+				return false
+			}
+		}
+	}
+
+	// Check if block fits within flow's primary axis bounds
+	switch blk.rot {
+	case 0, 2: // horizontal
+		return blk.xMin >= f.priMin && blk.xMax <= f.priMax
+	case 1, 3: // vertical
+		return blk.yMin >= f.priMin && blk.yMax <= f.priMax
+	}
+
+	return true
+}
+
+// ============================================================================
+// PopplerTextOutputDev Methods - 新增方法
+// ============================================================================
+
+// AddUnderline adds an underline (参考 Poppler 的 addUnderline)
+func (dev *PopplerTextOutputDev) AddUnderline(x0, y0, x1, y1 float64) {
+	dev.underlines = append(dev.underlines, TextUnderline{
+		x0: x0,
+		y0: y0,
+		x1: x1,
+		y1: y1,
+		color: struct {
+			r, g, b float64
+		}{
+			r: dev.fillColorR,
+			g: dev.fillColorG,
+			b: dev.fillColorB,
+		},
+	})
+}
+
+// AddLink adds a hyperlink (参考 Poppler 的 addLink)
+func (dev *PopplerTextOutputDev) AddLink(xMin, yMin, xMax, yMax float64, link interface{}) {
+	dev.links = append(dev.links, TextLink{
+		xMin: xMin,
+		yMin: yMin,
+		xMax: xMax,
+		yMax: yMax,
+		link: link,
+	})
+}
+
+// IncCharCount increments the character count (参考 Poppler 的 incCharCount)
+func (dev *PopplerTextOutputDev) IncCharCount(nChars int) {
+	dev.charPos += nChars
+}
+
+// IncRefCnt increments the reference count
+func (dev *PopplerTextOutputDev) IncRefCnt() {
+	dev.refCnt++
+}
+
+// DecRefCnt decrements the reference count
+func (dev *PopplerTextOutputDev) DecRefCnt() {
+	dev.refCnt--
+	if dev.refCnt < 0 {
+		dev.refCnt = 0
+	}
+}
+
+// SetDiscardDiag sets whether to discard diagonal text
+func (dev *PopplerTextOutputDev) SetDiscardDiag(discard bool) {
+	dev.discardDiag = discard
+}
+
+// ============================================================================
+// TextLine Methods - 使用 TextLine 的字段
+// ============================================================================
+
+// BuildLineText 构建行文本（使用 text 字段）
+func (line *TextLine) BuildLineText() string {
+	if line.len == 0 || len(line.text) == 0 {
+		return ""
+	}
+	return string(line.text[:line.len])
+}
+
+// GetCharEdge 获取字符的边缘位置（使用 edge 字段）
+func (line *TextLine) GetCharEdge(charIdx int) float64 {
+	if charIdx < 0 || charIdx >= len(line.edge) {
+		return 0
+	}
+	return line.edge[charIdx]
+}
+
+// GetCharColumn 获取字符的列号（使用 col 字段）
+func (line *TextLine) GetCharColumn(charIdx int) int {
+	if charIdx < 0 || charIdx >= len(line.col) {
+		return 0
+	}
+	return line.col[charIdx]
+}
+
+// GetNormalizedText 获取规范化文本（使用 normalized 字段）
+func (line *TextLine) GetNormalizedText() string {
+	if line.normalizedLen == 0 || len(line.normalized) == 0 {
+		return ""
+	}
+	return string(line.normalized[:line.normalizedLen])
+}
+
+// GetASCIITranslation 获取 ASCII 翻译（使用 asciiTranslation 字段）
+func (line *TextLine) GetASCIITranslation() string {
+	if line.asciiLen == 0 || len(line.asciiTranslation) == 0 {
+		return ""
+	}
+	return string(line.asciiTranslation[:line.asciiLen])
+}
+
+// MapNormalizedToUnicode 将规范化文本索引映射到 Unicode 文本索引
+func (line *TextLine) MapNormalizedToUnicode(normalizedIdx int) int {
+	if normalizedIdx < 0 || normalizedIdx >= len(line.normalizedIdx) {
+		return -1
+	}
+	return line.normalizedIdx[normalizedIdx]
+}
+
+// MapASCIIToUnicode 将 ASCII 索引映射到 Unicode 文本索引
+func (line *TextLine) MapASCIIToUnicode(asciiIdx int) int {
+	if asciiIdx < 0 || asciiIdx >= len(line.asciiIdx) {
+		return -1
+	}
+	return line.asciiIdx[asciiIdx]
+}
+
+// AddCharToLine 添加字符到行（填充所有字段）
+func (line *TextLine) AddCharToLine(char rune, edge float64, col int) {
+	line.text = append(line.text, char)
+	line.edge = append(line.edge, edge)
+	line.col = append(line.col, col)
+	line.len++
+	line.convertedLen++
+}
+
+// NormalizeText 规范化文本（用于搜索和比较）
+// 参考 Poppler 的文本规范化逻辑
+func (line *TextLine) NormalizeText() {
+	if line.len == 0 {
+		return
+	}
+
+	line.normalized = make([]rune, 0, line.len)
+	line.normalizedIdx = make([]int, 0, line.len)
+
+	for i := 0; i < line.len; i++ {
+		char := line.text[i]
+
+		// 简化的规范化：转换为小写
+		normalized := toLowerRune(char)
+
+		// 跳过某些字符（如零宽度字符）
+		if isZeroWidthChar(char) {
+			continue
+		}
+
+		line.normalized = append(line.normalized, normalized)
+		line.normalizedIdx = append(line.normalizedIdx, i)
+	}
+
+	line.normalizedLen = len(line.normalized)
+}
+
+// TranslateToASCII 将文本翻译为 ASCII（用于搜索）
+// 参考 Poppler 的 ASCII 翻译逻辑
+func (line *TextLine) TranslateToASCII() {
+	if line.normalizedLen == 0 {
+		line.NormalizeText()
+	}
+
+	line.asciiTranslation = make([]rune, 0, line.normalizedLen)
+	line.asciiIdx = make([]int, 0, line.normalizedLen)
+
+	for i := 0; i < line.normalizedLen; i++ {
+		char := line.normalized[i]
+
+		// 转换为 ASCII
+		ascii := toASCIIRune(char)
+
+		if ascii != 0 {
+			line.asciiTranslation = append(line.asciiTranslation, ascii)
+			line.asciiIdx = append(line.asciiIdx, line.normalizedIdx[i])
+		}
+	}
+
+	line.asciiLen = len(line.asciiTranslation)
+}
+
+// FindInLine 在行中查找文本（使用规范化和 ASCII 翻译）
+func (line *TextLine) FindInLine(searchText string, caseSensitive bool) []int {
+	var matches []int
+
+	if !caseSensitive {
+		// 使用规范化文本搜索
+		if line.normalizedLen == 0 {
+			line.NormalizeText()
+		}
+
+		searchRunes := []rune(strings.ToLower(searchText))
+		normalizedText := line.normalized[:line.normalizedLen]
+
+		for i := 0; i <= len(normalizedText)-len(searchRunes); i++ {
+			match := true
+			for j := 0; j < len(searchRunes); j++ {
+				if normalizedText[i+j] != searchRunes[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				// 映射回原始文本索引
+				matches = append(matches, line.normalizedIdx[i])
+			}
+		}
+	} else {
+		// 直接在原始文本中搜索
+		searchRunes := []rune(searchText)
+		text := line.text[:line.len]
+
+		for i := 0; i <= len(text)-len(searchRunes); i++ {
+			match := true
+			for j := 0; j < len(searchRunes); j++ {
+				if text[i+j] != searchRunes[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				matches = append(matches, i)
+			}
+		}
+	}
+
+	return matches
+}
+
+// GetCharBounds 获取字符的边界框（使用 edge 字段）
+func (line *TextLine) GetCharBounds(charIdx int) (xMin, xMax, yMin, yMax float64) {
+	if charIdx < 0 || charIdx >= line.len {
+		return 0, 0, 0, 0
+	}
+
+	// 使用 edge 数组获取字符边界
+	xMin = line.edge[charIdx]
+
+	// 如果有下一个字符，使用其 edge 作为 xMax
+	if charIdx+1 < len(line.edge) {
+		xMax = line.edge[charIdx+1]
+	} else {
+		// 最后一个字符，估算宽度
+		if charIdx > 0 {
+			avgWidth := (line.edge[charIdx] - line.edge[0]) / float64(charIdx)
+			xMax = xMin + avgWidth
+		} else {
+			xMax = xMin + 10 // 默认宽度
+		}
+	}
+
+	yMin = line.yMin
+	yMax = line.yMax
+
+	return xMin, xMax, yMin, yMax
+}
+
+// SetHyphenated 设置连字符标志
+func (line *TextLine) SetHyphenated(hyphenated bool) {
+	line.hyphenated = hyphenated
+
+	// 如果设置为 true，检查最后一个字符是否是连字符
+	if hyphenated && line.len > 0 {
+		lastChar := line.text[line.len-1]
+		if lastChar != '-' && lastChar != '­' { // 普通连字符和软连字符
+			// 如果不是连字符，添加一个
+			line.text = append(line.text, '-')
+			line.len++
+		}
+	}
+}
+
+// GetConvertedLength 获取转换后的字符数（使用 convertedLen 字段）
+func (line *TextLine) GetConvertedLength() int {
+	return line.convertedLen
+}
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+// toLowerRune 将 rune 转换为小写
+func toLowerRune(r rune) rune {
+	if r >= 'A' && r <= 'Z' {
+		return r + ('a' - 'A')
+	}
+	return r
+}
+
+// isZeroWidthChar 检查是否是零宽度字符
+func isZeroWidthChar(r rune) bool {
+	return r == 0x200B || // Zero Width Space
+		r == 0x200C || // Zero Width Non-Joiner
+		r == 0x200D || // Zero Width Joiner
+		r == 0xFEFF // Zero Width No-Break Space
+}
+
+// toASCIIRune 将 Unicode 字符转换为 ASCII
+func toASCIIRune(r rune) rune {
+	// 简化的转换：只保留 ASCII 范围内的字符
+	if r >= 0 && r <= 127 {
+		return r
+	}
+
+	// 常见的 Unicode 到 ASCII 映射
+	switch r {
+	case 'à', 'á', 'â', 'ã', 'ä', 'å', 'ā', 'ă', 'ą':
+		return 'a'
+	case 'À', 'Á', 'Â', 'Ã', 'Ä', 'Å', 'Ā', 'Ă', 'Ą':
+		return 'A'
+	case 'è', 'é', 'ê', 'ë', 'ē', 'ĕ', 'ė', 'ę', 'ě':
+		return 'e'
+	case 'È', 'É', 'Ê', 'Ë', 'Ē', 'Ĕ', 'Ė', 'Ę', 'Ě':
+		return 'E'
+	case 'ì', 'í', 'î', 'ï', 'ĩ', 'ī', 'ĭ', 'į':
+		return 'i'
+	case 'Ì', 'Í', 'Î', 'Ï', 'Ĩ', 'Ī', 'Ĭ', 'Į':
+		return 'I'
+	case 'ò', 'ó', 'ô', 'õ', 'ö', 'ō', 'ŏ', 'ő':
+		return 'o'
+	case 'Ò', 'Ó', 'Ô', 'Õ', 'Ö', 'Ō', 'Ŏ', 'Ő':
+		return 'O'
+	case 'ù', 'ú', 'û', 'ü', 'ũ', 'ū', 'ŭ', 'ů', 'ű', 'ų':
+		return 'u'
+	case 'Ù', 'Ú', 'Û', 'Ü', 'Ũ', 'Ū', 'Ŭ', 'Ů', 'Ű', 'Ų':
+		return 'U'
+	case 'ñ', 'ń', 'ņ', 'ň':
+		return 'n'
+	case 'Ñ', 'Ń', 'Ņ', 'Ň':
+		return 'N'
+	case 'ç', 'ć', 'ĉ', 'ċ', 'č':
+		return 'c'
+	case 'Ç', 'Ć', 'Ĉ', 'Ċ', 'Č':
+		return 'C'
+	case 'ß':
+		return 's'
+	case 'æ':
+		return 'a' // 简化处理
+	case 'Æ':
+		return 'A'
+	case 'œ':
+		return 'o' // 简化处理
+	case 'Œ':
+		return 'O'
+	default:
+		return 0 // 无法转换
+	}
+}
+
+// ============================================================================
+// TextLine Builder - 构建 TextLine 的辅助类
+// ============================================================================
+
+// TextLineBuilder 用于构建 TextLine
+type TextLineBuilder struct {
+	line *TextLine
+}
+
+// NewTextLineBuilder 创建新的 TextLine 构建器
+func NewTextLineBuilder(rot int) *TextLineBuilder {
+	return &TextLineBuilder{
+		line: &TextLine{
+			rot:              rot,
+			text:             make([]rune, 0, 100),
+			edge:             make([]float64, 0, 100),
+			col:              make([]int, 0, 100),
+			normalized:       make([]rune, 0, 100),
+			normalizedIdx:    make([]int, 0, 100),
+			asciiTranslation: make([]rune, 0, 100),
+			asciiIdx:         make([]int, 0, 100),
+		},
+	}
+}
+
+// AddWord 添加单词到行
+func (b *TextLineBuilder) AddWord(word *TextWord) {
+	if word == nil {
+		return
+	}
+
+	// 添加单词文本
+	wordRunes := []rune(word.text)
+	startIdx := b.line.len
+
+	for i, r := range wordRunes {
+		// 计算字符的边缘位置
+		var edge float64
+		if b.line.rot == 0 {
+			// 水平文本
+			progress := float64(i) / float64(len(wordRunes))
+			edge = word.xMin + (word.xMax-word.xMin)*progress
+		} else {
+			// 垂直文本（简化处理）
+			progress := float64(i) / float64(len(wordRunes))
+			edge = word.yMin + (word.yMax-word.yMin)*progress
+		}
+
+		// 计算列号（简化：使用字符索引）
+		col := startIdx + i
+
+		b.line.AddCharToLine(r, edge, col)
+	}
+
+	// 如果单词后有空格，添加空格
+	if word.spaceAfter {
+		spaceEdge := word.edgeEnd
+		spaceCol := b.line.len
+		b.line.AddCharToLine(' ', spaceEdge, spaceCol)
+	}
+
+	// 更新边界框
+	if word.xMin < b.line.xMin || b.line.xMin == 0 {
+		b.line.xMin = word.xMin
+	}
+	if word.xMax > b.line.xMax {
+		b.line.xMax = word.xMax
+	}
+	if word.yMin < b.line.yMin || b.line.yMin == 0 {
+		b.line.yMin = word.yMin
+	}
+	if word.yMax > b.line.yMax {
+		b.line.yMax = word.yMax
+	}
+	b.line.base = word.base
+
+	// 添加单词到单词列表
+	if b.line.lastWord != nil {
+		b.line.lastWord.next = word
+	} else {
+		b.line.words = []*TextWord{word}
+	}
+	b.line.lastWord = word
+}
+
+// Build 完成构建并返回 TextLine
+func (b *TextLineBuilder) Build() *TextLine {
+	// 规范化文本
+	b.line.NormalizeText()
+
+	// 翻译为 ASCII
+	b.line.TranslateToASCII()
+
+	// 检查是否以连字符结尾
+	if b.line.len > 0 {
+		lastChar := b.line.text[b.line.len-1]
+		b.line.hyphenated = (lastChar == '-' || lastChar == '­')
+	}
+
+	return b.line
+}
+
+// ============================================================================
+// 使用示例和测试辅助函数
+// ============================================================================
+
+// ExampleTextLineUsage 展示如何使用 TextLine 的所有字段
+func ExampleTextLineUsage() {
+	// 创建一个 TextLine
+	builder := NewTextLineBuilder(0)
+
+	// 创建一些测试单词
+	word1 := &TextWord{
+		text:       "Hello",
+		xMin:       10,
+		xMax:       50,
+		yMin:       100,
+		yMax:       120,
+		base:       110,
+		spaceAfter: true,
+		edgeEnd:    50,
+	}
+
+	word2 := &TextWord{
+		text:       "World",
+		xMin:       55,
+		xMax:       95,
+		yMin:       100,
+		yMax:       120,
+		base:       110,
+		spaceAfter: false,
+		edgeEnd:    95,
+	}
+
+	// 添加单词
+	builder.AddWord(word1)
+	builder.AddWord(word2)
+
+	// 构建行
+	line := builder.Build()
+
+	// 使用各个字段
+	fmt.Printf("Line text: %s\n", line.BuildLineText())
+	fmt.Printf("Line length: %d\n", line.len)
+	fmt.Printf("Converted length: %d\n", line.GetConvertedLength())
+	fmt.Printf("Normalized text: %s\n", line.GetNormalizedText())
+	fmt.Printf("ASCII translation: %s\n", line.GetASCIITranslation())
+	fmt.Printf("Is hyphenated: %v\n", line.IsHyphenated())
+
+	// 获取字符信息
+	for i := 0; i < line.len; i++ {
+		edge := line.GetCharEdge(i)
+		col := line.GetCharColumn(i)
+		fmt.Printf("Char %d: '%c' edge=%.2f col=%d\n", i, line.text[i], edge, col)
+	}
+
+	// 搜索文本
+	matches := line.FindInLine("hello", false)
+	fmt.Printf("Found %d matches for 'hello'\n", len(matches))
 }

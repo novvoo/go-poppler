@@ -32,6 +32,34 @@ type ImageInfo struct {
 	Ratio            int
 	Data             []byte
 	stream           Stream
+
+	// Additional fields from Poppler
+	// Image position and transformation
+	X        float64 // X position in page coordinates
+	Y        float64 // Y position in page coordinates
+	ScaleX   float64 // X scale factor
+	ScaleY   float64 // Y scale factor
+	Rotation int     // Rotation angle (0, 90, 180, 270)
+
+	// Image mask information
+	HasMask    bool  // whether image has a mask
+	MaskColors []int // mask color range
+	IsMask     bool  // whether this is a mask image
+	Invert     bool  // invert mask
+
+	// Rendering hints
+	Intent string    // rendering intent
+	Decode []float64 // decode array
+
+	// Inline image flag
+	Inline bool // whether this is an inline image
+
+	// Image metadata
+	Name  string      // image name from resources
+	SMask interface{} // soft mask (reference to another image)
+
+	// Color key masking
+	ColorKeyMask []int // color key mask array
 }
 
 // ImageExtractor extracts images from PDF documents
@@ -595,6 +623,38 @@ type ImageData struct {
 	// 遮罩信息
 	HasMask    bool
 	MaskColors []int
+
+	// Additional fields from Poppler
+	// Image dictionary reference
+	ImageDict Dictionary // image dictionary
+
+	// Decode array for color transformation
+	Decode []float64 // decode array
+
+	// Rendering intent
+	Intent string // rendering intent (Perceptual, RelativeColorimetric, etc.)
+
+	// Soft mask
+	SMask     interface{} // soft mask image data
+	SMaskDict Dictionary  // soft mask dictionary
+
+	// Inline image flag
+	Inline bool // whether this is an inline image
+
+	// Image name
+	Name string // image name from resources
+
+	// Color key masking
+	ColorKeyMask []int // color key mask array [min1 max1 min2 max2 ...]
+
+	// Image metadata
+	Metadata interface{} // metadata stream
+
+	// Alternate images
+	Alternates []interface{} // alternate images
+
+	// Structural parent
+	StructParent int // structural parent ID
 }
 
 // ImageMaskData 图片遮罩数据
@@ -610,6 +670,16 @@ type ImageMaskData struct {
 	ScaleX   float64
 	ScaleY   float64
 	Rotation int
+
+	// Additional fields from Poppler
+	// Decode array
+	Decode []float64 // decode array for mask
+
+	// Mask dictionary
+	MaskDict Dictionary // mask dictionary
+
+	// Inline mask flag
+	Inline bool // whether this is an inline mask
 }
 
 // NewImprovedImageRenderer 创建改进的图片渲染器
@@ -779,4 +849,225 @@ func (d *SimpleImageOutputDevice) GetImages() []RenderedImageInfo {
 // Clear 清空图片列表
 func (d *SimpleImageOutputDevice) Clear() {
 	d.images = d.images[:0]
+}
+
+// ============================================================================
+// ImageInfo Methods - 新增方法
+// ============================================================================
+
+// GetBBox returns the bounding box of the image in page coordinates
+func (img *ImageInfo) GetBBox() (xMin, yMin, xMax, yMax float64) {
+	xMin = img.X
+	yMin = img.Y
+	xMax = img.X + float64(img.Width)*img.ScaleX
+	yMax = img.Y + float64(img.Height)*img.ScaleY
+	return
+}
+
+// GetDPI returns the DPI (dots per inch) of the image
+func (img *ImageInfo) GetDPI() (xDPI, yDPI float64) {
+	if img.ScaleX != 0 {
+		xDPI = float64(img.Width) / img.ScaleX * 72.0
+	}
+	if img.ScaleY != 0 {
+		yDPI = float64(img.Height) / img.ScaleY * 72.0
+	}
+	return
+}
+
+// IsInline returns whether this is an inline image
+func (img *ImageInfo) IsInline() bool {
+	return img.Inline
+}
+
+// HasSoftMask returns whether the image has a soft mask
+func (img *ImageInfo) HasSoftMask() bool {
+	return img.SMask != nil
+}
+
+// HasColorKeyMask returns whether the image has a color key mask
+func (img *ImageInfo) HasColorKeyMask() bool {
+	return len(img.ColorKeyMask) > 0
+}
+
+// GetAspectRatio returns the aspect ratio of the image
+func (img *ImageInfo) GetAspectRatio() float64 {
+	if img.Height == 0 {
+		return 0
+	}
+	return float64(img.Width) / float64(img.Height)
+}
+
+// ============================================================================
+// ImageData Methods - 新增方法
+// ============================================================================
+
+// GetBBox returns the bounding box of the image data
+func (img *ImageData) GetBBox() (xMin, yMin, xMax, yMax float64) {
+	xMin = img.X
+	yMin = img.Y
+	xMax = img.X + float64(img.Width)*img.ScaleX
+	yMax = img.Y + float64(img.Height)*img.ScaleY
+	return
+}
+
+// HasSoftMask returns whether the image has a soft mask
+func (img *ImageData) HasSoftMask() bool {
+	return img.SMask != nil
+}
+
+// HasColorKeyMask returns whether the image has a color key mask
+func (img *ImageData) HasColorKeyMask() bool {
+	return len(img.ColorKeyMask) > 0
+}
+
+// IsInline returns whether this is an inline image
+func (img *ImageData) IsInline() bool {
+	return img.Inline
+}
+
+// GetPixelCount returns the total number of pixels
+func (img *ImageData) GetPixelCount() int {
+	return img.Width * img.Height
+}
+
+// GetBytesPerPixel returns the number of bytes per pixel
+func (img *ImageData) GetBytesPerPixel() int {
+	// Calculate based on color space and bits per component
+	componentsPerPixel := 1
+	switch img.ColorSpace {
+	case "DeviceRGB", "RGB":
+		componentsPerPixel = 3
+	case "DeviceCMYK", "CMYK":
+		componentsPerPixel = 4
+	case "DeviceGray", "Gray":
+		componentsPerPixel = 1
+	}
+
+	bitsPerPixel := componentsPerPixel * img.BitsPerComp
+	return (bitsPerPixel + 7) / 8 // Round up to nearest byte
+}
+
+// GetExpectedDataSize returns the expected size of image data in bytes
+func (img *ImageData) GetExpectedDataSize() int {
+	return img.GetPixelCount() * img.GetBytesPerPixel()
+}
+
+// ============================================================================
+// ImageMaskData Methods - 新增方法
+// ============================================================================
+
+// GetBBox returns the bounding box of the mask
+func (mask *ImageMaskData) GetBBox() (xMin, yMin, xMax, yMax float64) {
+	xMin = mask.X
+	yMin = mask.Y
+	xMax = mask.X + float64(mask.Width)*mask.ScaleX
+	yMax = mask.Y + float64(mask.Height)*mask.ScaleY
+	return
+}
+
+// IsInline returns whether this is an inline mask
+func (mask *ImageMaskData) IsInline() bool {
+	return mask.Inline
+}
+
+// GetPixelCount returns the total number of pixels in the mask
+func (mask *ImageMaskData) GetPixelCount() int {
+	return mask.Width * mask.Height
+}
+
+// ============================================================================
+// Image Extraction Helper Functions
+// ============================================================================
+
+// ExtractImageTransform extracts transformation information from CTM
+func ExtractImageTransform(ctm [6]float64, width, height int) (x, y, scaleX, scaleY float64, rotation int) {
+	// Image is mapped from unit square [0,0,1,1] to page coordinates
+	// CTM format: [a b c d e f] where:
+	// x' = a*x + c*y + e
+	// y' = b*x + d*y + f
+
+	x = ctm[4]
+	y = ctm[5]
+
+	// Calculate scale factors
+	scaleX = math.Sqrt(ctm[0]*ctm[0] + ctm[1]*ctm[1])
+	scaleY = math.Sqrt(ctm[2]*ctm[2] + ctm[3]*ctm[3])
+
+	// Calculate rotation angle
+	angle := math.Atan2(ctm[1], ctm[0]) * 180 / math.Pi
+
+	// Round to nearest 90 degrees
+	if angle >= -45 && angle < 45 {
+		rotation = 0
+	} else if angle >= 45 && angle < 135 {
+		rotation = 90
+	} else if angle >= 135 || angle < -135 {
+		rotation = 180
+	} else {
+		rotation = 270
+	}
+
+	return
+}
+
+// IsImageMask checks if an image dictionary represents a mask
+func IsImageMask(dict Dictionary) bool {
+	if imageMask := dict.Get("ImageMask"); imageMask != nil {
+		if b, ok := imageMask.(Boolean); ok {
+			return bool(b)
+		}
+	}
+	return false
+}
+
+// GetImageIntent extracts rendering intent from image dictionary
+func GetImageIntent(dict Dictionary) string {
+	if intent := dict.Get("Intent"); intent != nil {
+		if name, ok := intent.(Name); ok {
+			return string(name)
+		}
+	}
+	return "RelativeColorimetric" // Default
+}
+
+// GetImageDecode extracts decode array from image dictionary
+func GetImageDecode(dict Dictionary, colorSpace string, bitsPerComp int) []float64 {
+	if decode := dict.Get("Decode"); decode != nil {
+		if arr, ok := decode.(Array); ok {
+			result := make([]float64, len(arr))
+			for i, v := range arr {
+				result[i] = objectToFloat(v)
+			}
+			return result
+		}
+	}
+
+	// Return default decode array based on color space
+	switch colorSpace {
+	case "DeviceGray", "Gray":
+		return []float64{0, 1}
+	case "DeviceRGB", "RGB":
+		return []float64{0, 1, 0, 1, 0, 1}
+	case "DeviceCMYK", "CMYK":
+		return []float64{0, 1, 0, 1, 0, 1, 0, 1}
+	default:
+		return []float64{0, 1}
+	}
+}
+
+// GetColorKeyMask extracts color key mask from image dictionary
+func GetColorKeyMask(dict Dictionary) []int {
+	if mask := dict.Get("Mask"); mask != nil {
+		if arr, ok := mask.(Array); ok {
+			result := make([]int, len(arr))
+			for i, v := range arr {
+				if intVal, ok := v.(Integer); ok {
+					result[i] = int(intVal)
+				}
+			}
+			return result
+		}
+	}
+	return nil
 }

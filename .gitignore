@@ -5,7 +5,7 @@
 *.pdf
 !test.pdf
 images
-poppler
+poppler/
 *.png
 *.svg
 docs
