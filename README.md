@@ -72,7 +72,8 @@ go build ./...
 - **多种流解码**：FlateDecode、LZWDecode、ASCII85Decode、ASCIIHexDecode、RunLengthDecode、DCTDecode、JBIG2Decode、JPXDecode (JPEG2000)
 - **加密支持**：RC4 和 AES 加密/解密
 - **文本提取**：支持多种字符编码和 CMap
-- **CJK 字符支持**：内置 CID 到 Unicode 映射，无需 poppler-data ⭐
+- **CJK 字符支持**：内置 CID 到 Unicode 映射，无需外部 poppler-data ⭐
+- **嵌入式数据**：poppler-data 完整打包进二进制，零外部依赖 🎁
 - **智能字体系统**：自动扫描和匹配系统字体（350+ 字体）
 - **图像提取**：支持 JPEG、PNG、JBIG2 等格式
 - **页面渲染**：渲染为 PPM、PNG、JPEG 格式
@@ -108,13 +109,27 @@ CGO_ENABLED=0 go build ./cmd/pdftotext
 CGO_ENABLED=0 go build ./cmd/pdfinfo
 ```
 
-> **注意**：本项目是纯 Go 实现，不依赖任何 C 库。建议在编译时设置 `CGO_ENABLED=0` 以确保生成完全静态链接的二进制文件，便于跨平台部署。
+> **注意**：
+> - 本项目是纯 Go 实现，不依赖任何 C 库
+> - **poppler-data 已完整嵌入**：编译后的二进制文件包含所有 CMap 和字符映射数据，无需外部数据文件
+> - 建议设置 `CGO_ENABLED=0` 以生成完全静态链接的二进制文件
+> - 单个可执行文件即可运行，便于跨平台部署和容器化
 
 ### 安装到 GOPATH
 
 ```bash
 go install github.com/novvoo/go-poppler/cmd/...@latest
 ```
+
+### 嵌入式数据说明
+
+编译时会自动将 `poppler-data` 目录（约 10-15 MB）打包进二进制文件，包括：
+- CMap 文件（Adobe-GB1, Adobe-CNS1, Adobe-Japan1, Adobe-Korea1 等）
+- CID to Unicode 映射
+- Name to Unicode 映射
+- Unicode Map 文件
+
+详细说明请参见 [EMBEDDED_DATA.md](EMBEDDED_DATA.md)
 
 ## 🧪 测试
 

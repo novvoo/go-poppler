@@ -9,6 +9,7 @@ import (
 )
 
 // RenderPageWithText renders a page with both images and text
+// 使用矢量渲染方法，参考 Poppler 的实现
 func (r *Renderer) RenderPageWithText(pageNum int) (*RenderedImage, error) {
 	if pageNum < 1 || pageNum > r.doc.NumPages() {
 		return nil, nil
@@ -39,24 +40,29 @@ func (r *Renderer) RenderPageWithText(pageNum int) (*RenderedImage, error) {
 		return nil, err
 	}
 
-	// Convert base image to RGBA for text overlay
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	// 使用矢量渲染器渲染文本
+	vectorRenderer := NewVectorTextRenderer(r.doc, r.dpiX)
+	img, err := vectorRenderer.RenderPageWithVectorText(page, baseImg, scaleX, scaleY)
+	if err != nil {
+		// 如果矢量渲染失败，回退到旧方法
+		img = image.NewRGBA(image.Rect(0, 0, width, height))
 
-	// Copy base image data to RGBA image
-	for y := 0; y < height && y < baseImg.Height; y++ {
-		for x := 0; x < width && x < baseImg.Width; x++ {
-			idx := (y*baseImg.Width + x) * 3
-			if idx+2 < len(baseImg.Data) {
-				r := baseImg.Data[idx]
-				g := baseImg.Data[idx+1]
-				b := baseImg.Data[idx+2]
-				img.Set(x, y, color.RGBA{r, g, b, 255})
+		// Copy base image data
+		for y := 0; y < height && y < baseImg.Height; y++ {
+			for x := 0; x < width && x < baseImg.Width; x++ {
+				idx := (y*baseImg.Width + x) * 3
+				if idx+2 < len(baseImg.Data) {
+					r := baseImg.Data[idx]
+					g := baseImg.Data[idx+1]
+					b := baseImg.Data[idx+2]
+					img.Set(x, y, color.RGBA{r, g, b, 255})
+				}
 			}
 		}
-	}
 
-	// Now render text on top of the base image
-	r.renderPageTextToRGBA(page, img, width, height, scaleX, scaleY)
+		// Fallback to old method
+		r.renderPageTextToRGBA(page, img, width, height, scaleX, scaleY)
+	}
 
 	// Convert to RGB data
 	data := make([]byte, width*height*3)
