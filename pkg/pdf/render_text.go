@@ -41,7 +41,7 @@ func (r *Renderer) RenderPageWithText(pageNum int) (*RenderedImage, error) {
 		return nil, err
 	}
 
-	// 使用矢量渲染器渲染文本
+	// 使用矢量渲染器渲染文本（已集成增强字体功能）
 	vectorRenderer := NewVectorTextRenderer(r.doc, r.dpiX)
 	img, err := vectorRenderer.RenderPageWithVectorText(page, baseImg, scaleX, scaleY)
 	if err != nil {

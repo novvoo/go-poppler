@@ -5,28 +5,29 @@ import (
 	"image/color"
 	"math"
 
-	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/font"
 )
 
 // VectorTextRenderer 使用矢量方法渲染文本，参考 Poppler 的 CairoOutputDev 实现
+// 统一使用 EnhancedTextRenderer 进行字体渲染
 type VectorTextRenderer struct {
-	doc          *Document
-	fontCache    *FontCache
-	fontScanner  *FontScanner
-	fontRenderer *FontRenderer
-	dpi          float64
-	antialiasing bool
+	doc               *Document
+	enhancedFontCache *EnhancedFontCache
+	enhancedRenderer  *EnhancedTextRenderer
+	fontScanner       *FontScanner
+	dpi               float64
+	antialiasing      bool
 }
 
 // NewVectorTextRenderer 创建新的矢量文本渲染器
 func NewVectorTextRenderer(doc *Document, dpi float64) *VectorTextRenderer {
 	return &VectorTextRenderer{
-		doc:          doc,
-		fontCache:    NewFontCache(dpi),
-		fontScanner:  GetGlobalFontScanner(),
-		fontRenderer: NewFontRenderer(dpi),
-		dpi:          dpi,
-		antialiasing: true,
+		doc:               doc,
+		enhancedFontCache: NewEnhancedFontCache(doc, dpi),
+		enhancedRenderer:  NewEnhancedTextRenderer(doc, dpi),
+		fontScanner:       GetGlobalFontScanner(),
+		dpi:               dpi,
+		antialiasing:      true,
 	}
 }
 
@@ -60,11 +61,8 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 	// 3. 使用正确的字体渲染每个字符
 	lines := vtr.groupTextIntoLines(extractor.textItems)
 
-	// 获取 CJK 字体
-	var cjkFont *truetype.Font
-	if cjkFontInfo := vtr.fontScanner.FindCJKFont(); cjkFontInfo != nil {
-		cjkFont, _ = vtr.fontCache.renderer.loadFontFromFile(cjkFontInfo.Path)
-	}
+	// 获取 CJK 字体（通过增强型字体缓存）
+	cjkFont := vtr.enhancedFontCache.GetCJKFont()
 
 	// 渲染每一行
 	for _, line := range lines {
@@ -85,47 +83,62 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 				continue
 			}
 
-			// 计算变换后的字体大小（参考 Poppler 的 SplashFTFont::doDrawChar 实现）
-			// 公式：最终像素高度 = Tf × |Tm[3]| × |CTM[3]|
-			//
-			// 注意：item.ctm 已经包含了初始 CTM（包含 DPI 缩放和 Y 轴翻转）
-			// 所以我们不需要再乘以 DPI 因子
+			// 计算变换后的字体大小（参考 Poppler 的 SplashOutputDev::doUpdateFont）
 			fontSize := item.fontSize
 			if fontSize <= 0 {
 				fontSize = 12
 			}
 
-			// 参考 Poppler 的实现：
-			// ftSize = fabs(fontSize * textMatrix[3] * ctm[3])
-			//
-			// 但是我们需要考虑旋转和倾斜，所以使用完整的矩阵计算
-			// 组合 CTM 和 TM 来计算最终的字体变换
-			combined := multiplyMatrix(item.ctm, item.tm)
+			// 只使用文本矩阵 (TM) 来计算字体大小，不要使用 CTM
+			// 因为 CTM 已经包含了 DPI 缩放，会导致字体过大
+			// 参考 Poppler: transformedSize = sqrt(m21*m21 + m22*m22)
+			// 其中 m21 = tm[2] * fontSize, m22 = tm[3] * fontSize
+			m21 := item.tm[2] * fontSize
+			m22 := item.tm[3] * fontSize
 
-			// 计算垂直方向的缩放因子（Y 方向）
-			// 使用 sqrt(m21^2 + m22^2) 来处理旋转的情况
-			m21 := combined[2]
-			m22 := combined[3]
-			verticalScale := math.Sqrt(m21*m21 + m22*m22)
+			// 计算垂直方向的变换大小
+			vertSize := math.Sqrt(m21*m21 + m22*m22)
 
-			// 最终字体大小 = 名义字号 × 垂直缩放因子
-			transformedFontSize := math.Abs(fontSize * verticalScale)
-
-			// Fallback to original fontSize if transformation results in zero/tiny size
-			if transformedFontSize < 0.1 {
-				transformedFontSize = fontSize
+			// 如果垂直大小太小，使用原始字号
+			scaledFontSize := vertSize
+			if scaledFontSize < 0.1 {
+				scaledFontSize = fontSize
 			}
 
-			scaledFontSize := transformedFontSize
+			// 调试：打印前几个字符的字体信息（已禁用）
+			// if len(line.items) < 3 {
+			// 	fmt.Printf("DEBUG: text='%s', fontSize=%.2f, tm=[%.3f,%.3f,%.3f,%.3f], scaledSize=%.2f\n",
+			// 		item.text, fontSize, item.tm[0], item.tm[1], item.tm[2], item.tm[3], scaledFontSize)
+			// }
 
-			// 选择合适的字体
-			ttfFont := vtr.selectFont(item, cjkFont)
+			// 使用增强型字体缓存获取字体（支持粗体/斜体、嵌入字体）
+			ttfFont, fontStyle := vtr.enhancedFontCache.GetFontWithStyle(item.font, item.fontDict)
 			if ttfFont == nil {
-				continue
+				// 回退到 CJK 字体
+				if cjkFont != nil && containsCJK(item.text) {
+					ttfFont = cjkFont
+					fontStyle = FontStyle{Bold: false, Italic: false}
+				} else {
+					continue
+				}
 			}
 
-			// 使用矢量方法渲染文本
-			vtr.drawTextVector(img, x, y, item.text, scaledFontSize, ttfFont)
+			// 准备渲染选项
+			renderOpts := &TextRenderOptions{
+				Font:              ttfFont,
+				FontSize:          scaledFontSize,
+				Color:             color.Black,
+				Bold:              fontStyle.Bold,
+				Italic:            fontStyle.Italic,
+				Antialiasing:      vtr.antialiasing,
+				SubpixelRendering: true,
+				EnableAntiAlias:   vtr.antialiasing,
+				EnableSubpixel:    true,
+				HintingMode:       font.HintingFull,
+			}
+
+			// 使用增强型渲染器渲染文本
+			vtr.enhancedRenderer.renderText(img, x, y, item.text, renderOpts)
 		}
 	}
 
@@ -203,53 +216,8 @@ func (vtr *VectorTextRenderer) groupTextIntoLines(items []textItemWithFont) []te
 	return lines
 }
 
-// selectFont 选择合适的字体（参考 Poppler 的字体选择逻辑）
-func (vtr *VectorTextRenderer) selectFont(item textItemWithFont, cjkFont *truetype.Font) *truetype.Font {
-	// 首先尝试使用 PDF 中嵌入的字体
-	var pdfFont *truetype.Font
-	if item.font != nil && item.fontDict != nil {
-		pdfFont = vtr.fontCache.GetFont(item.font, item.fontDict, vtr.doc)
-	}
-
-	// 检查文本类型
-	hasCJK := containsCJK(item.text)
-	hasNonCJK := containsNonCJK(item.text)
-
-	// 如果是纯 CJK 文本，优先使用 CJK 字体
-	if hasCJK && !hasNonCJK {
-		if cjkFont != nil {
-			return cjkFont
-		}
-	}
-
-	// 如果是纯非 CJK 文本，使用 PDF 字体
-	if !hasCJK && hasNonCJK {
-		if pdfFont != nil {
-			return pdfFont
-		}
-	}
-
-	// 混合文本：优先使用 PDF 字体，如果不可用则使用 CJK 字体
-	if pdfFont != nil {
-		return pdfFont
-	}
-	if cjkFont != nil {
-		return cjkFont
-	}
-
-	// 最后的回退
-	return vtr.fontCache.renderer.fallback
-}
-
-// drawTextVector 使用矢量方法绘制文本（参考 Poppler 的 drawChar）
-func (vtr *VectorTextRenderer) drawTextVector(img *image.RGBA, x, y int, text string, fontSize float64, ttfFont *truetype.Font) {
-	if ttfFont == nil {
-		return
-	}
-
-	// 使用 FontRenderer 渲染文本
-	_ = vtr.fontRenderer.RenderText(img, x, y, text, fontSize, ttfFont, color.Black)
-}
+// 注意：selectFont 和 drawTextVector 方法已被删除
+// 现在统一使用 EnhancedTextRenderer 进行字体选择和渲染
 
 // RenderPageWithVectorText 使用矢量方法渲染整个页面（图像+文本）
 func (vtr *VectorTextRenderer) RenderPageWithVectorText(page *Page, baseImg *RenderedImage, scaleX, scaleY float64) (*image.RGBA, error) {

@@ -3,18 +3,14 @@ package pdf
 import (
 	"bytes"
 	"fmt"
-	"image"
 	"image/color"
-	"image/draw"
 	"math"
 	"sort"
 	"strings"
 	"unicode/utf16"
 
-	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
 	"golang.org/x/image/font"
-	"golang.org/x/image/math/fixed"
 )
 
 // TextExtractionOptions contains options for text extraction
@@ -1852,198 +1848,8 @@ func (p *pageTextExtractorWithFont) estimateTextWidth(text string, fontSize floa
 }
 
 // ============================================================================
-// Improved Text Renderer - 基于 Poppler 的文本渲染器
+// 注意：旧的 ImprovedTextRenderer 已被删除，请使用 EnhancedTextRenderer
 // ============================================================================
-
-// ImprovedTextRenderer 改进的文本渲染器
-// 基于 Poppler 的 doShowText 实现
-type ImprovedTextRenderer struct {
-	state     *TextGraphicsState
-	outputDev TextOutputDevice
-	debugMode bool
-}
-
-// TextOutputDevice 文本输出设备接口
-// 参考 Poppler 的 OutputDev
-type TextOutputDevice interface {
-	// DrawChar 绘制单个字符
-	// 参考 Poppler 的 OutputDev::drawChar()
-	DrawChar(state *TextGraphicsState, x, y, dx, dy, originX, originY float64,
-		code int, text string)
-
-	// BeginString 开始字符串
-	BeginString(state *TextGraphicsState, text string)
-
-	// EndString 结束字符串
-	EndString(state *TextGraphicsState)
-}
-
-// NewImprovedTextRenderer 创建改进的文本渲染器
-func NewImprovedTextRenderer(state *TextGraphicsState, outputDev TextOutputDevice) *ImprovedTextRenderer {
-	return &ImprovedTextRenderer{
-		state:     state,
-		outputDev: outputDev,
-		debugMode: false,
-	}
-}
-
-// RenderText 渲染文本字符串
-// 参考 Poppler 的 Gfx::doShowText()
-func (r *ImprovedTextRenderer) RenderText(text string) error {
-	if r.state.Font == nil {
-		return fmt.Errorf("no font set")
-	}
-
-	// 通知输出设备开始字符串
-	r.outputDev.BeginString(r.state, text)
-
-	// 获取书写模式（0=水平，1=垂直）
-	wMode := 0 // 简化实现，假设水平书写
-
-	// 计算文本上升偏移
-	riseX, riseY := r.state.TextTransformDelta(0, r.state.Rise)
-
-	// 获取当前文本位置
-	x0 := r.state.CurTextX + riseX
-	y0 := r.state.CurTextY + riseY
-
-	if r.debugMode {
-		fmt.Printf("RenderText: text='%s', pos=(%.2f, %.2f), fontSize=%.2f\n",
-			text, x0, y0, r.state.FontSize)
-	}
-
-	// 处理每个字符
-	for i, ch := range text {
-		// 获取字符宽度（简化实现）
-		charWidth := r.getCharWidth(ch)
-
-		// 计算字符前进量
-		// 参考 Poppler: dx = dx * fontSize + charSpace
-		dx := charWidth*r.state.FontSize + r.state.CharSpace
-
-		// 如果是空格，添加单词间距
-		isSpace := (ch == ' ')
-		if isSpace {
-			dx += r.state.WordSpace
-		}
-
-		// 应用水平缩放
-		if wMode == 0 {
-			dx *= r.state.Scale / 100.0
-		}
-
-		dy := 0.0
-
-		// 应用文本矩阵变换
-		tdx, tdy := r.state.TextTransformDelta(dx, dy)
-
-		// 计算字符原点（用于字形定位）
-		originX := 0.0
-		originY := 0.0
-		tOriginX, tOriginY := r.state.TextTransformDelta(originX, originY)
-
-		// 获取当前位置（设备空间）
-		deviceX, deviceY := r.state.Transform(r.state.CurTextX+riseX, r.state.CurTextY+riseY)
-
-		if r.debugMode {
-			fmt.Printf("  Char[%d]='%c': pos=(%.2f,%.2f), advance=(%.2f,%.2f)\n",
-				i, ch, deviceX, deviceY, tdx, tdy)
-		}
-
-		// 调用输出设备绘制字符
-		r.outputDev.DrawChar(r.state,
-			r.state.CurTextX+riseX, r.state.CurTextY+riseY,
-			tdx, tdy, tOriginX, tOriginY,
-			int(ch), string(ch))
-
-		// 更新文本位置
-		// 参考 Poppler: state->textShiftWithUserCoords(tdx, tdy)
-		r.state.AdvanceTextPosition(dx, dy)
-	}
-
-	// 通知输出设备结束字符串
-	r.outputDev.EndString(r.state)
-
-	return nil
-}
-
-// getCharWidth 获取字符宽度（简化实现）
-func (r *ImprovedTextRenderer) getCharWidth(ch rune) float64 {
-	// 实际实现应该从字体中查询
-	// 参考 Poppler: font->getNextChar() 返回字符宽度
-	if r.state.Font != nil && r.state.Font.Widths != nil {
-		if width, ok := r.state.Font.Widths[int(ch)]; ok {
-			return width / 1000.0 // PDF 字体宽度通常以 1000 为单位
-		}
-	}
-
-	// 默认宽度
-	return 0.5
-}
-
-// SetDebugMode 设置调试模式
-func (r *ImprovedTextRenderer) SetDebugMode(debug bool) {
-	r.debugMode = debug
-}
-
-// SimpleTextOutputDevice 简单的文本输出设备实现
-type SimpleTextOutputDevice struct {
-	chars []RenderedChar
-}
-
-// RenderedChar 渲染的字符信息
-type RenderedChar struct {
-	Char     string
-	X, Y     float64 // 设备空间坐标
-	DX, DY   float64 // 前进量
-	FontSize float64
-	Rotation int
-}
-
-// NewSimpleTextOutputDevice 创建简单文本输出设备
-func NewSimpleTextOutputDevice() *SimpleTextOutputDevice {
-	return &SimpleTextOutputDevice{
-		chars: make([]RenderedChar, 0),
-	}
-}
-
-// DrawChar 实现 TextOutputDevice 接口
-func (d *SimpleTextOutputDevice) DrawChar(state *TextGraphicsState,
-	x, y, dx, dy, originX, originY float64, code int, text string) {
-
-	// 转换到设备空间
-	deviceX, deviceY := state.Transform(x, y)
-
-	d.chars = append(d.chars, RenderedChar{
-		Char:     text,
-		X:        deviceX,
-		Y:        deviceY,
-		DX:       dx,
-		DY:       dy,
-		FontSize: state.FontSize,
-		Rotation: state.GetRotation(),
-	})
-}
-
-// BeginString 实现 TextOutputDevice 接口
-func (d *SimpleTextOutputDevice) BeginString(state *TextGraphicsState, text string) {
-	// 可以在这里做一些初始化
-}
-
-// EndString 实现 TextOutputDevice 接口
-func (d *SimpleTextOutputDevice) EndString(state *TextGraphicsState) {
-	// 可以在这里做一些清理
-}
-
-// GetChars 获取所有渲染的字符
-func (d *SimpleTextOutputDevice) GetChars() []RenderedChar {
-	return d.chars
-}
-
-// Clear 清空字符列表
-func (d *SimpleTextOutputDevice) Clear() {
-	d.chars = d.chars[:0]
-}
 
 // ============================================================================
 // Text Layout - Poppler 风格的文本布局保持
@@ -2246,329 +2052,45 @@ func ExtractPageTextWithLayout(page *Page) (string, error) {
 }
 
 // ============================================================================
-// Advanced Text Renderer - 高质量文本渲染
+// 注意：旧的 AdvancedTextRenderer 已被删除，请使用 EnhancedTextRenderer
 // ============================================================================
 
-// AdvancedTextRenderer 提供高质量的文本渲染
-// 参考 Poppler 的 CairoOutputDev 实现
-type AdvancedTextRenderer struct {
-	dpi             float64
-	metricsCache    *FontMetricsCache
-	enableKerning   bool
-	enableSubpixel  bool
-	enableAntiAlias bool
-	hintingMode     font.Hinting
-}
-
-// NewAdvancedTextRenderer 创建高级文本渲染器
-func NewAdvancedTextRenderer(dpi float64) *AdvancedTextRenderer {
-	return &AdvancedTextRenderer{
-		dpi:             dpi,
-		metricsCache:    NewFontMetricsCache(dpi),
-		enableKerning:   true,
-		enableSubpixel:  true,
-		enableAntiAlias: true,
-		hintingMode:     font.HintingFull,
-	}
-}
-
-// SetKerning 设置是否启用字距调整
-func (atr *AdvancedTextRenderer) SetKerning(enabled bool) {
-	atr.enableKerning = enabled
-}
-
-// SetSubpixelPositioning 设置是否启用子像素定位
-func (atr *AdvancedTextRenderer) SetSubpixelPositioning(enabled bool) {
-	atr.enableSubpixel = enabled
-}
-
-// SetAntiAliasing 设置是否启用抗锯齿
-func (atr *AdvancedTextRenderer) SetAntiAliasing(enabled bool) {
-	atr.enableAntiAlias = enabled
-}
-
-// SetHinting 设置字体提示模式
-func (atr *AdvancedTextRenderer) SetHinting(mode font.Hinting) {
-	atr.hintingMode = mode
-}
-
-// RenderText 渲染文本到图像
-func (atr *AdvancedTextRenderer) RenderText(img *image.RGBA, x, y float64, text string, fontSize float64, ttfFont *truetype.Font, col color.Color) error {
-	if ttfFont == nil || text == "" {
-		return nil
-	}
-
-	// 获取字体度量
-	metrics := atr.metricsCache.Get(ttfFont, fontSize)
-	if metrics == nil {
-		return nil
-	}
-
-	// 创建 FreeType 上下文
-	c := freetype.NewContext()
-	c.SetDPI(atr.dpi)
-	c.SetFont(ttfFont)
-	c.SetFontSize(fontSize)
-	c.SetClip(img.Bounds())
-	c.SetDst(img)
-	c.SetSrc(image.NewUniform(col))
-
-	// 设置提示模式
-	c.SetHinting(atr.hintingMode)
-
-	// 如果启用字距调整，逐字符渲染
-	if atr.enableKerning {
-		return atr.renderTextWithKerning(c, metrics, x, y, text)
-	}
-
-	// 否则直接渲染整个字符串
-	pt := atr.createPoint(x, y)
-	_, err := c.DrawString(text, pt)
-	return err
-}
-
-// renderTextWithKerning 使用字距调整渲染文本
-func (atr *AdvancedTextRenderer) renderTextWithKerning(c *freetype.Context, metrics *FontMetrics, x, y float64, text string) error {
-	runes := []rune(text)
-	currentX := x
-
-	for i, r := range runes {
-		// 渲染当前字符
-		pt := atr.createPoint(currentX, y)
-		_, err := c.DrawString(string(r), pt)
-		if err != nil {
-			return err
-		}
-
-		// 计算下一个字符的位置
-		advance := float64(metrics.MeasureRune(r))
-
-		// 添加字距调整
-		if i < len(runes)-1 {
-			kern := float64(metrics.GetKerning(r, runes[i+1]))
-			advance += kern
-		}
-
-		currentX += advance
-	}
-
-	return nil
-}
-
-// createPoint 创建绘制点，支持子像素定位
-func (atr *AdvancedTextRenderer) createPoint(x, y float64) fixed.Point26_6 {
-	if atr.enableSubpixel {
-		// 子像素定位：保留小数部分
-		return fixed.Point26_6{
-			X: fixed.Int26_6(x * 64),
-			Y: fixed.Int26_6(y * 64),
-		}
-	}
-
-	// 像素对齐：四舍五入到整数像素
-	return freetype.Pt(int(x+0.5), int(y+0.5))
-}
-
-// MeasureText 测量文本宽度
-func (atr *AdvancedTextRenderer) MeasureText(text string, fontSize float64, ttfFont *truetype.Font) float64 {
-	if ttfFont == nil || text == "" {
-		return 0
-	}
-
-	metrics := atr.metricsCache.Get(ttfFont, fontSize)
-	if metrics == nil {
-		return float64(len(text)) * fontSize * 0.6
-	}
-
-	if atr.enableKerning {
-		return float64(metrics.MeasureStringWithKerning(text))
-	}
-
-	return float64(metrics.MeasureString(text))
-}
-
-// RenderTextWithBackground 渲染带背景的文本
-func (atr *AdvancedTextRenderer) RenderTextWithBackground(img *image.RGBA, x, y float64, text string, fontSize float64, ttfFont *truetype.Font, textCol, bgCol color.Color) error {
-	if ttfFont == nil || text == "" {
-		return nil
-	}
-
-	// 测量文本尺寸
-	width := atr.MeasureText(text, fontSize, ttfFont)
-	metrics := atr.metricsCache.Get(ttfFont, fontSize)
-
-	// 绘制背景矩形
-	bgRect := image.Rect(
-		int(x),
-		int(y-float64(metrics.GetAscent())),
-		int(x+width),
-		int(y+float64(metrics.GetDescent())),
-	)
-	draw.Draw(img, bgRect, &image.Uniform{bgCol}, image.Point{}, draw.Src)
-
-	// 渲染文本
-	return atr.RenderText(img, x, y, text, fontSize, ttfFont, textCol)
-}
-
-// RenderTextOutline 渲染文本轮廓
-func (atr *AdvancedTextRenderer) RenderTextOutline(img *image.RGBA, x, y float64, text string, fontSize float64, ttfFont *truetype.Font, outlineCol color.Color, outlineWidth int) error {
-	if ttfFont == nil || text == "" || outlineWidth <= 0 {
-		return nil
-	}
-
-	// 在多个偏移位置渲染文本以创建轮廓效果
-	offsets := []struct{ dx, dy int }{
-		{-outlineWidth, 0},
-		{outlineWidth, 0},
-		{0, -outlineWidth},
-		{0, outlineWidth},
-		{-outlineWidth, -outlineWidth},
-		{outlineWidth, -outlineWidth},
-		{-outlineWidth, outlineWidth},
-		{outlineWidth, outlineWidth},
-	}
-
-	for _, offset := range offsets {
-		err := atr.RenderText(img, x+float64(offset.dx), y+float64(offset.dy), text, fontSize, ttfFont, outlineCol)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// TextRenderOptions 文本渲染选项
+// TextRenderOptions 文本渲染选项（保留用于兼容性）
 type TextRenderOptions struct {
-	FontSize        float64
-	Color           color.Color
-	BackgroundColor color.Color
-	OutlineColor    color.Color
-	OutlineWidth    int
-	EnableKerning   bool
-	EnableSubpixel  bool
-	EnableAntiAlias bool
-	HintingMode     font.Hinting
-	LetterSpacing   float64 // 额外的字符间距
-	WordSpacing     float64 // 额外的单词间距
-	Scale           float64 // 水平缩放
+	Font              *truetype.Font // 字体
+	FontSize          float64        // 字体大小
+	Color             color.Color    // 文本颜色
+	BackgroundColor   color.Color    // 背景颜色（可选）
+	OutlineColor      color.Color    // 轮廓颜色（可选）
+	OutlineWidth      int            // 轮廓宽度
+	Bold              bool           // 粗体
+	Italic            bool           // 斜体
+	EnableKerning     bool           // 启用字距调整
+	EnableSubpixel    bool           // 启用子像素渲染
+	EnableAntiAlias   bool           // 启用抗锯齿
+	HintingMode       font.Hinting   // 字体提示模式
+	LetterSpacing     float64        // 额外的字符间距
+	WordSpacing       float64        // 额外的单词间距
+	Scale             float64        // 水平缩放
+	SubpixelRendering bool           // 子像素渲染（别名）
+	Antialiasing      bool           // 抗锯齿（别名）
+	Hinting           font.Hinting   // 提示（别名）
 }
 
 // DefaultTextRenderOptions 返回默认渲染选项
 func DefaultTextRenderOptions() TextRenderOptions {
 	return TextRenderOptions{
-		FontSize:        12,
-		Color:           color.Black,
-		EnableKerning:   true,
-		EnableSubpixel:  true,
-		EnableAntiAlias: true,
-		HintingMode:     font.HintingFull,
-		Scale:           1.0,
+		FontSize:          12,
+		Color:             color.Black,
+		EnableKerning:     true,
+		EnableSubpixel:    true,
+		EnableAntiAlias:   true,
+		HintingMode:       font.HintingFull,
+		Scale:             1.0,
+		SubpixelRendering: true,
+		Antialiasing:      true,
+		Hinting:           font.HintingFull,
 	}
-}
-
-// RenderTextWithOptions 使用指定选项渲染文本
-func (atr *AdvancedTextRenderer) RenderTextWithOptions(img *image.RGBA, x, y float64, text string, ttfFont *truetype.Font, opts TextRenderOptions) error {
-	if ttfFont == nil || text == "" {
-		return nil
-	}
-
-	// 临时设置选项
-	oldKerning := atr.enableKerning
-	oldSubpixel := atr.enableSubpixel
-	oldAntiAlias := atr.enableAntiAlias
-	oldHinting := atr.hintingMode
-
-	atr.enableKerning = opts.EnableKerning
-	atr.enableSubpixel = opts.EnableSubpixel
-	atr.enableAntiAlias = opts.EnableAntiAlias
-	atr.hintingMode = opts.HintingMode
-
-	defer func() {
-		atr.enableKerning = oldKerning
-		atr.enableSubpixel = oldSubpixel
-		atr.enableAntiAlias = oldAntiAlias
-		atr.hintingMode = oldHinting
-	}()
-
-	// 渲染背景
-	if opts.BackgroundColor != nil {
-		err := atr.RenderTextWithBackground(img, x, y, text, opts.FontSize, ttfFont, opts.Color, opts.BackgroundColor)
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-
-	// 渲染轮廓
-	if opts.OutlineColor != nil && opts.OutlineWidth > 0 {
-		err := atr.RenderTextOutline(img, x, y, text, opts.FontSize, ttfFont, opts.OutlineColor, opts.OutlineWidth)
-		if err != nil {
-			return err
-		}
-	}
-
-	// 渲染文本（考虑额外间距和缩放）
-	if opts.LetterSpacing != 0 || opts.WordSpacing != 0 || opts.Scale != 1.0 {
-		return atr.renderTextWithSpacing(img, x, y, text, opts.FontSize, ttfFont, opts.Color, opts.LetterSpacing, opts.WordSpacing, opts.Scale)
-	}
-
-	return atr.RenderText(img, x, y, text, opts.FontSize, ttfFont, opts.Color)
-}
-
-// renderTextWithSpacing 渲染带额外间距的文本
-func (atr *AdvancedTextRenderer) renderTextWithSpacing(img *image.RGBA, x, y float64, text string, fontSize float64, ttfFont *truetype.Font, col color.Color, letterSpacing, wordSpacing, scale float64) error {
-	metrics := atr.metricsCache.Get(ttfFont, fontSize)
-	if metrics == nil {
-		return nil
-	}
-
-	c := freetype.NewContext()
-	c.SetDPI(atr.dpi)
-	c.SetFont(ttfFont)
-	c.SetFontSize(fontSize)
-	c.SetClip(img.Bounds())
-	c.SetDst(img)
-	c.SetSrc(image.NewUniform(col))
-	c.SetHinting(atr.hintingMode)
-
-	runes := []rune(text)
-	currentX := x
-
-	for i, r := range runes {
-		// 渲染字符
-		pt := atr.createPoint(currentX, y)
-		_, err := c.DrawString(string(r), pt)
-		if err != nil {
-			return err
-		}
-
-		// 计算前进距离
-		advance := float64(metrics.MeasureRune(r)) * scale
-
-		// 添加字距调整
-		if atr.enableKerning && i < len(runes)-1 {
-			kern := float64(metrics.GetKerning(r, runes[i+1]))
-			advance += kern
-		}
-
-		// 添加额外的字符间距
-		advance += letterSpacing
-
-		// 如果是空格，添加额外的单词间距
-		if r == ' ' {
-			advance += wordSpacing
-		}
-
-		currentX += advance
-	}
-
-	return nil
-}
-
-// Clear 清空缓存
-func (atr *AdvancedTextRenderer) Clear() {
-	atr.metricsCache.Clear()
 }
 
 // ============================================================================
