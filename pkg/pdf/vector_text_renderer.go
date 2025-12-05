@@ -1,7 +1,6 @@
 package pdf
 
 import (
-	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -68,25 +67,9 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 	}
 
 	// 渲染每一行
-	fmt.Printf("DEBUG VTR: Total lines=%d\n", len(lines))
-	for lineIdx, line := range lines {
-		if lineIdx == 0 {
-			fmt.Printf("DEBUG VTR: First line has %d items\n", len(line.items))
-		}
-		for itemIdx, item := range line.items {
-			if lineIdx == 0 && itemIdx == 0 {
-				fmt.Printf("DEBUG VTR: Processing first item, text='%s'\n", item.text)
-				fmt.Printf("DEBUG VTR: Raw coords: x=%.2f y=%.2f\n", item.x, item.y)
-				fmt.Printf("DEBUG VTR: CTM=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
-					item.ctm[0], item.ctm[1], item.ctm[2], item.ctm[3], item.ctm[4], item.ctm[5])
-				fmt.Printf("DEBUG VTR: TM=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
-					item.tm[0], item.tm[1], item.tm[2], item.tm[3], item.tm[4], item.tm[5])
-			}
-
+	for _, line := range lines {
+		for _, item := range line.items {
 			if item.text == "" {
-				if lineIdx == 0 && itemIdx == 0 {
-					fmt.Printf("DEBUG VTR: First item has empty text, skipping\n")
-				}
 				continue
 			}
 
@@ -99,15 +82,7 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 
 			// 确保坐标在边界内
 			if x < 0 || x >= img.Bounds().Dx() || y < 0 || y >= img.Bounds().Dy() {
-				if lineIdx == 0 && itemIdx == 0 {
-					fmt.Printf("DEBUG VTR: First item out of bounds: x=%d y=%d (from PDF coords %.2f, %.2f) bounds=%v\n",
-						x, y, item.x, item.y, img.Bounds())
-				}
 				continue
-			}
-
-			if lineIdx == 0 && itemIdx == 0 {
-				fmt.Printf("DEBUG VTR: First item in bounds: x=%d y=%d (from PDF coords %.2f, %.2f)\n", x, y, item.x, item.y)
 			}
 
 			// 计算变换后的字体大小（参考 Poppler 的 SplashFTFont::doDrawChar 实现）
@@ -139,16 +114,6 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 			// Fallback to original fontSize if transformation results in zero/tiny size
 			if transformedFontSize < 0.1 {
 				transformedFontSize = fontSize
-			}
-
-			// Debug output for first few items in first line
-			if lineIdx == 0 {
-				textPreview := item.text
-				if len(textPreview) > 10 {
-					textPreview = textPreview[:10]
-				}
-				fmt.Printf("DEBUG VTR: text='%s' fontSize=%.2f tm[3]=%.3f ctm[3]=%.3f vertScale=%.3f final=%.2f\n",
-					textPreview, fontSize, item.tm[3], item.ctm[3], verticalScale, transformedFontSize)
 			}
 
 			scaledFontSize := transformedFontSize
