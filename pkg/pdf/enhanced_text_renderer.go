@@ -305,7 +305,10 @@ func (e *enhancedTextExtractor) extract(contents []byte) (string, error) {
 	}
 	e.scale = 100
 	e.fontSize = 12
-	e.stateStack = make([]textGraphicsState, 0)
+	e.fillColorR = 0
+	e.fillColorG = 0
+	e.fillColorB = 0
+	e.stateStack = make([]textGraphicsState, 0, 8)
 
 	ops, err := e.parseContentStream(contents)
 	if err != nil {
@@ -369,9 +372,29 @@ func (e *enhancedTextExtractor) tokenToOperand(tok Token, lexer *Lexer) (Object,
 		return Name(tok.Value.(string)), nil
 	case TokenHexString:
 		return String{Value: tok.Value.([]byte), IsHex: true}, nil
+	case TokenArrayStart:
+		return e.parseArrayOperand(lexer)
 	default:
 		return nil, nil
 	}
+}
+
+func (e *enhancedTextExtractor) parseArrayOperand(lexer *Lexer) (Array, error) {
+	var arr Array
+	for {
+		tok, err := lexer.NextToken()
+		if err != nil || tok.Type == TokenEOF {
+			break
+		}
+		if tok.Type == TokenArrayEnd {
+			break
+		}
+		obj, err := e.tokenToOperand(tok, lexer)
+		if err == nil && obj != nil {
+			arr = append(arr, obj)
+		}
+	}
+	return arr, nil
 }
 
 func (e *enhancedTextExtractor) processOperation(op Operation) {
