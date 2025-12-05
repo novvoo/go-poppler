@@ -159,6 +159,8 @@ func (p *pageTextExtractor) extract(contents []byte) (string, error) {
 	// Initialize state
 	p.tm = [6]float64{1, 0, 0, 1, 0, 0}
 	p.tlm = [6]float64{1, 0, 0, 1, 0, 0}
+	// For text extraction (not rendering), we use identity CTM
+	// because we want text in PDF user space coordinates
 	p.ctm = [6]float64{1, 0, 0, 1, 0, 0}
 	p.scale = 100
 	p.fontSize = 12
@@ -278,7 +280,9 @@ func (p *pageTextExtractor) processOperation(op Operation) {
 				objectToFloat(op.Operands[4]),
 				objectToFloat(op.Operands[5]),
 			}
-			p.ctm = multiplyMatrix(p.ctm, newCTM)
+			// 参考 Poppler 的 GfxState::concatCTM 实现
+			// cm 操作是左乘：当前 CTM ← 新 cm × 当前 CTM
+			p.ctm = multiplyMatrix(newCTM, p.ctm)
 		}
 
 	case "BT": // Begin text
@@ -653,13 +657,20 @@ func (p *pageTextExtractor) showText(data []byte) {
 		return
 	}
 
-	// Get position from text matrix
-	tmX := p.tm[4]
-	tmY := p.tm[5]
+	// In Poppler, the coordinates passed to drawChar are already in user space
+	// (curTextX, curTextY), which are maintained by textShift operations.
+	// The text matrix (TM) transforms from text space to user space.
+	// Then CTM transforms from user space to device space.
+	//
+	// For text rendering, the position is at TM's translation (tm[4], tm[5])
+	// which is already in user space. We just need to apply CTM to get device coords.
+	userX := p.tm[4]
+	userY := p.tm[5]
 
-	// Apply CTM transformation to get device coordinates
-	x := p.ctm[0]*tmX + p.ctm[2]*tmY + p.ctm[4]
-	y := p.ctm[1]*tmX + p.ctm[3]*tmY + p.ctm[5]
+	// Apply CTM to convert from user space to device space
+	// This matches: state->transform(x, y, &x1, &y1) in TextPage::addChar
+	x := p.ctm[0]*userX + p.ctm[2]*userY + p.ctm[4]
+	y := p.ctm[1]*userX + p.ctm[3]*userY + p.ctm[5]
 
 	// Calculate character length
 	charLen := len([]rune(text))
@@ -1099,13 +1110,36 @@ type pageTextExtractorWithFont struct {
 	stateStack []textGraphicsState
 }
 
+func (p *pageTextExtractorWithFont) setInitialCTM(scaleX, scaleY float64, page *Page) {
+	// 参考 Poppler 的 SplashOutputDev::startPage 实现
+	// 设置初始 CTM，将 PDF 坐标系转换为设备坐标系
+	// 这个 CTM 会在 PDF 内容流处理过程中被 cm 操作修改
+	pageHeight := page.Height()
+
+	p.ctm = [6]float64{
+		scaleX,              // a: X 缩放
+		0,                   // b: X 倾斜
+		0,                   // c: Y 倾斜
+		-scaleY,             // d: Y 缩放（负值表示 Y 轴翻转）
+		0,                   // e: X 平移
+		scaleY * pageHeight, // f: Y 平移（将原点从底部移到顶部）
+	}
+}
+
 func (p *pageTextExtractorWithFont) extract(contents []byte) (string, error) {
 	// Initialize state
 	p.tm = [6]float64{1, 0, 0, 1, 0, 0}
 	p.tlm = [6]float64{1, 0, 0, 1, 0, 0}
-	p.ctm = [6]float64{1, 0, 0, 1, 0, 0}
+	// CTM should be set by setInitialCTM before calling extract
+	if p.ctm[0] == 0 && p.ctm[3] == 0 {
+		// If not set, use identity matrix as fallback
+		p.ctm = [6]float64{1, 0, 0, 1, 0, 0}
+	}
 	p.scale = 100
 	p.fontSize = 12
+	// 初始化状态栈为空
+	// 注意：Poppler 的 GfxState 在 startPage 后已经包含了初始 CTM
+	// PDF 内容流中的 q/Q 操作会在此基础上保存/恢复状态
 	p.stateStack = make([]textGraphicsState, 0)
 
 	// Parse content stream
@@ -1215,7 +1249,9 @@ func (p *pageTextExtractorWithFont) processOperation(op Operation) {
 				objectToFloat(op.Operands[4]),
 				objectToFloat(op.Operands[5]),
 			}
-			p.ctm = multiplyMatrix(p.ctm, newCTM)
+			// 参考 Poppler 的 GfxState::concatCTM 实现
+			// cm 操作是左乘：当前 CTM ← 新 cm × 当前 CTM
+			p.ctm = multiplyMatrix(newCTM, p.ctm)
 		}
 
 	case "BT": // Begin text
@@ -1574,11 +1610,12 @@ func (p *pageTextExtractorWithFont) showText(data []byte) {
 		return
 	}
 
-	// Get position from text matrix
+	// Get position from text matrix (in PDF user space)
 	tmX := p.tm[4]
 	tmY := p.tm[5]
 
-	// Apply CTM transformation to get device coordinates (like pageTextExtractor does)
+	// 应用 CTM 变换，将 PDF 用户空间坐标转换为设备坐标
+	// 参考 Poppler 的实现：CTM 已经包含了初始变换和所有 cm 操作的累积
 	x := p.ctm[0]*tmX + p.ctm[2]*tmY + p.ctm[4]
 	y := p.ctm[1]*tmX + p.ctm[3]*tmY + p.ctm[5]
 

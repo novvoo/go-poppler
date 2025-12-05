@@ -45,6 +45,11 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 		textItems: make([]textItemWithFont, 0),
 	}
 
+	// Set initial CTM to match Poppler's behavior
+	// This transforms PDF coordinates (origin at bottom-left, Y up)
+	// to device coordinates (origin at top-left, Y down)
+	extractor.setInitialCTM(scaleX, scaleY, page)
+
 	_, err = extractor.extract(contents)
 	if err != nil {
 		return err
@@ -54,7 +59,7 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 	// 1. 按 Y 坐标分组成行
 	// 2. 每行内按 X 坐标排序
 	// 3. 使用正确的字体渲染每个字符
-	lines := vtr.groupTextIntoLines(extractor.textItems, page.Height())
+	lines := vtr.groupTextIntoLines(extractor.textItems)
 
 	// 获取 CJK 字体
 	var cjkFont *truetype.Font
@@ -63,7 +68,6 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 	}
 
 	// 渲染每一行
-	pageHeight := page.Height()
 	fmt.Printf("DEBUG VTR: Total lines=%d\n", len(lines))
 	for lineIdx, line := range lines {
 		if lineIdx == 0 {
@@ -72,7 +76,7 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 		for itemIdx, item := range line.items {
 			if lineIdx == 0 && itemIdx == 0 {
 				fmt.Printf("DEBUG VTR: Processing first item, text='%s'\n", item.text)
-				fmt.Printf("DEBUG VTR: Raw coords: x=%.2f y=%.2f pageHeight=%.2f\n", item.x, item.y, pageHeight)
+				fmt.Printf("DEBUG VTR: Raw coords: x=%.2f y=%.2f\n", item.x, item.y)
 				fmt.Printf("DEBUG VTR: CTM=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
 					item.ctm[0], item.ctm[1], item.ctm[2], item.ctm[3], item.ctm[4], item.ctm[5])
 				fmt.Printf("DEBUG VTR: TM=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]\n",
@@ -86,70 +90,51 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 				continue
 			}
 
-			// 转换坐标：用户空间 -> 设备空间
-			// Note: item.x and item.y are already transformed by CTM
-			// The CTM may define a custom coordinate system, so we need to:
-			// 1. Transform page corners using CTM to find the device space bounds
-			// 2. Map item coordinates to image coordinates
-
-			// For now, use a simpler approach:
-			// If CTM has negative Y scale (d < 0), the coordinate system is flipped
-			// In this case, we need to find the maximum Y in device space
-			x := int(math.Round(item.x * scaleX))
-			var y int
-
-			// Calculate device space page height using CTM
-			// Transform (0, pageHeight) to get top-left corner in device space
-			devicePageHeight := math.Abs(item.ctm[3]*pageHeight + item.ctm[5])
-
-			if item.ctm[3] < 0 {
-				// Y axis flipped: device_y increases downward from CTM translation
-				// Map from device space to image space
-				y = int(math.Round((devicePageHeight - item.y) * scaleY))
-			} else {
-				// Y axis not flipped: standard PDF coordinates
-				y = int(math.Round((pageHeight - item.y) * scaleY))
-			}
+			// item.x 和 item.y 已经是设备坐标
+			// 在 showText 中已经通过 CTM 转换过了
+			// CTM 包含了初始变换（缩放 + Y 轴翻转）和所有 cm 操作的累积
+			// 直接使用即可
+			x := int(math.Round(item.x))
+			y := int(math.Round(item.y))
 
 			// 确保坐标在边界内
 			if x < 0 || x >= img.Bounds().Dx() || y < 0 || y >= img.Bounds().Dy() {
 				if lineIdx == 0 && itemIdx == 0 {
-					fmt.Printf("DEBUG VTR: First item out of bounds: x=%d y=%d (from %.2f, %.2f) bounds=%v\n",
+					fmt.Printf("DEBUG VTR: First item out of bounds: x=%d y=%d (from PDF coords %.2f, %.2f) bounds=%v\n",
 						x, y, item.x, item.y, img.Bounds())
 				}
 				continue
 			}
 
 			if lineIdx == 0 && itemIdx == 0 {
-				fmt.Printf("DEBUG VTR: First item in bounds: x=%d y=%d\n", x, y)
+				fmt.Printf("DEBUG VTR: First item in bounds: x=%d y=%d (from PDF coords %.2f, %.2f)\n", x, y, item.x, item.y)
 			}
 
-			// 计算变换后的字体大小（参考 Poppler 的实现）
-			// Reference: Poppler's SplashOutputDev::doUpdateFont
-			// We need to combine CTM and TM to get the final transformation
+			// 计算变换后的字体大小（参考 Poppler 的 SplashFTFont::doDrawChar 实现）
+			// 公式：最终像素高度 = Tf × |Tm[3]| × |CTM[3]|
+			//
+			// 注意：item.ctm 已经包含了初始 CTM（包含 DPI 缩放和 Y 轴翻转）
+			// 所以我们不需要再乘以 DPI 因子
 			fontSize := item.fontSize
 			if fontSize <= 0 {
 				fontSize = 12
 			}
 
-			// Combine CTM and TM: finalMatrix = CTM * TM
-			// This gives us the complete transformation from text space to device space
+			// 参考 Poppler 的实现：
+			// ftSize = fabs(fontSize * textMatrix[3] * ctm[3])
+			//
+			// 但是我们需要考虑旋转和倾斜，所以使用完整的矩阵计算
+			// 组合 CTM 和 TM 来计算最终的字体变换
 			combined := multiplyMatrix(item.ctm, item.tm)
 
-			// Calculate transformed font size from the combined matrix
-			// Reference: Poppler calculates this as sqrt(m21^2 + m22^2) where m21, m22 are from combined matrix
-			m11 := combined[0] * fontSize
-			m12 := combined[1] * fontSize
-			m21 := combined[2] * fontSize
-			m22 := combined[3] * fontSize
+			// 计算垂直方向的缩放因子（Y 方向）
+			// 使用 sqrt(m21^2 + m22^2) 来处理旋转的情况
+			m21 := combined[2]
+			m22 := combined[3]
+			verticalScale := math.Sqrt(m21*m21 + m22*m22)
 
-			// Use vertical component (m21, m22) for font size as per Poppler
-			// But also check horizontal component as fallback
-			vertSize := math.Sqrt(m21*m21 + m22*m22)
-			horizSize := math.Sqrt(m11*m11 + m12*m12)
-
-			// Use the larger of the two to ensure text is visible
-			transformedFontSize := math.Max(vertSize, horizSize)
+			// 最终字体大小 = 名义字号 × 垂直缩放因子
+			transformedFontSize := math.Abs(fontSize * verticalScale)
 
 			// Fallback to original fontSize if transformation results in zero/tiny size
 			if transformedFontSize < 0.1 {
@@ -162,14 +147,10 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 				if len(textPreview) > 10 {
 					textPreview = textPreview[:10]
 				}
-				fmt.Printf("DEBUG VTR: text='%s' fontSize=%.2f ctm=[%.3f,%.3f,%.3f,%.3f] tm=[%.3f,%.3f,%.3f,%.3f] vert=%.3f horiz=%.3f final=%.3f\n",
-					textPreview, fontSize,
-					item.ctm[0], item.ctm[1], item.ctm[2], item.ctm[3],
-					item.tm[0], item.tm[1], item.tm[2], item.tm[3],
-					vertSize, horizSize, transformedFontSize)
+				fmt.Printf("DEBUG VTR: text='%s' fontSize=%.2f tm[3]=%.3f ctm[3]=%.3f vertScale=%.3f final=%.2f\n",
+					textPreview, fontSize, item.tm[3], item.ctm[3], verticalScale, transformedFontSize)
 			}
 
-			// 使用变换后的大小（FreeType 会在此基础上应用 DPI 缩放）
 			scaledFontSize := transformedFontSize
 
 			// 选择合适的字体
@@ -187,7 +168,7 @@ func (vtr *VectorTextRenderer) RenderPageText(page *Page, img *image.RGBA, scale
 }
 
 // groupTextIntoLines 将文本项分组成行（参考 Poppler 的 coalesce 方法）
-func (vtr *VectorTextRenderer) groupTextIntoLines(items []textItemWithFont, pageHeight float64) []textLineWithFont {
+func (vtr *VectorTextRenderer) groupTextIntoLines(items []textItemWithFont) []textLineWithFont {
 	if len(items) == 0 {
 		return nil
 	}
